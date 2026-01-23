@@ -1,0 +1,23 @@
+export type Payment = {
+  id: string;
+  condominium_id: string;
+  unit_id: string | null;
+  financial_account_id?: string | null;
+  expense_item_id?: string | null;
+  folio_rec?: number | null;
+  total_amount: number;
+  payment_date: string;
+  payment_method?: string | null;
+  reference_number?: string | null;
+  notes?: string | null;
+  status?: string | null;
+  created_at?: string;
+  allocated_amount?: number | null;
+  remaining_balance?: number | null;
+  pdf_url?: string | null;
+  payer_profile_id?: string | null;
+  financial_account?: { bank_name?: string | null; account_number?: string | null } | null;
+  unit?: { full_identifier?: string | null; identifier?: string | null } | null;
+  payer?: { full_name?: string | null } | null;
+  expense_item?: { name?: string | null } | null;
+};
