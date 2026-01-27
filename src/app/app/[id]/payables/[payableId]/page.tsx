@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { formatCurrency } from "@/lib/utils";
 import { getPayableDetail } from "../actions";
+import ApprovePayableButton from "./ApprovePayableButton";
 
 type PageProps = { params: { id: string; payableId: string } | Promise<{ id: string; payableId: string }> };
 
@@ -20,6 +21,8 @@ export default async function PayableDetailPage({ params }: PageProps) {
 
   const statusColors: Record<string, string> = {
     borrador: "bg-gray-100 text-gray-700",
+    pendiente_aprobacion: "bg-amber-100 text-amber-800",
+    aprobada: "bg-blue-100 text-blue-800",
     pendiente_pago: "bg-amber-100 text-amber-800",
     parcialmente_pagado: "bg-blue-100 text-blue-800",
     pagado: "bg-emerald-100 text-emerald-800",
@@ -37,36 +40,55 @@ export default async function PayableDetailPage({ params }: PageProps) {
       .map((s: string) => s.trim().toLowerCase())
       .find((s: string) => s.startsWith("ref:")) || null;
 
+  // Determinar si se puede aprobar
+  const canApprove = payable.status === "pendiente_aprobacion";
+  const canPay = payable.status === "aprobada";
+
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <div>
           <p className="text-[11px] uppercase font-semibold text-gray-500">Orden de pago</p>
-          <h1 className="text-2xl font-semibold">Factura {payable.invoice_number}</h1>
+          <h1 className="text-2xl font-semibold">
+            {payable.folio_op ? `OP-${String(payable.folio_op).padStart(3, '0')} · ` : ''}
+            Factura {payable.invoice_number}
+          </h1>
           <p className="text-sm text-gray-500">
             Proveedor: {payable.supplier?.name || "-"} · Rubro: {payable.expense_item?.name || "-"}
           </p>
         </div>
         <div className="flex gap-2">
-          <Link
-            href={`/api/payables/${payable.id}/order?condominiumId=${condominiumId}`}
-            target="_blank"
-            className="inline-flex items-center gap-2 rounded-md bg-slate-200 text-gray-800 px-4 py-2 text-xs font-semibold shadow-sm hover:bg-slate-300"
-          >
-            Imprimir orden
-          </Link>
-          <Link
-            href={`/app/${condominiumId}/payables/${payable.id}/edit`}
-            className="inline-flex items-center gap-2 rounded-md bg-white text-gray-800 px-4 py-2 text-xs font-semibold shadow-sm border border-gray-200 hover:border-brand hover:text-brand"
-          >
-            Editar
-          </Link>
-          <Link
-            href={`/app/${condominiumId}/payables/pay?supplierId=${payable.supplier_id}`}
-            className="inline-flex items-center gap-2 rounded-md bg-brand text-white px-4 py-2 text-xs font-semibold shadow-sm hover:bg-brand-dark"
-          >
-            Registrar pago
-          </Link>
+          {canApprove && (
+            <ApprovePayableButton 
+              condominiumId={condominiumId} 
+              payableId={payableId} 
+            />
+          )}
+          {payable.folio_op && (
+            <Link
+              href={`/api/payables/${payable.id}/order?condominiumId=${condominiumId}`}
+              target="_blank"
+              className="inline-flex items-center gap-2 rounded-md bg-slate-200 text-gray-800 px-4 py-2 text-xs font-semibold shadow-sm hover:bg-slate-300"
+            >
+              Imprimir orden
+            </Link>
+          )}
+          {canApprove && (
+            <Link
+              href={`/app/${condominiumId}/payables/${payable.id}/edit`}
+              className="inline-flex items-center gap-2 rounded-md bg-white text-gray-800 px-4 py-2 text-xs font-semibold shadow-sm border border-gray-200 hover:border-brand hover:text-brand"
+            >
+              Editar
+            </Link>
+          )}
+          {canPay && (
+            <Link
+              href={`/app/${condominiumId}/payables/pay?supplierId=${payable.supplier_id}`}
+              className="inline-flex items-center gap-2 rounded-md bg-brand text-white px-4 py-2 text-xs font-semibold shadow-sm hover:bg-brand-dark"
+            >
+              Registrar pago
+            </Link>
+          )}
         </div>
       </div>
 
@@ -81,7 +103,7 @@ export default async function PayableDetailPage({ params }: PageProps) {
             <span
               className={`inline-flex items-center rounded-full px-2.5 py-1 text-[11px] font-semibold ${statusColors[payable.status] || "bg-gray-100 text-gray-700"}`}
             >
-              {payable.status.replace("_", " ")}
+              {payable.status.replace(/_/g, " ")}
             </span>
           </div>
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 text-sm text-gray-700">
@@ -98,6 +120,12 @@ export default async function PayableDetailPage({ params }: PageProps) {
               <p>{payable.due_date}</p>
             </div>
           </div>
+          {payable.folio_op && (
+            <div className="text-sm text-gray-700">
+              <p className="text-xs font-semibold text-gray-500">Folio OP</p>
+              <p className="font-mono font-semibold">OP-{String(payable.folio_op).padStart(3, '0')}</p>
+            </div>
+          )}
           {payable.description && (
             <div className="text-sm text-gray-700">
               <p className="text-xs font-semibold text-gray-500">Detalle</p>
@@ -167,7 +195,9 @@ export default async function PayableDetailPage({ params }: PageProps) {
             <tbody className="divide-y divide-gray-100">
               {(payable.allocations || []).map((a: any) => (
                 <tr key={a.id} className="hover:bg-gray-50/70">
-                  <td className="px-3 py-2 text-xs text-gray-800">{a.egress?.folio_eg || "--"}</td>
+                  <td className="px-3 py-2 text-xs text-gray-800">
+                    EG-{String(a.egress?.folio_eg || 0).padStart(3, '0')}
+                  </td>
                   <td className="px-3 py-2 text-xs text-gray-700">{a.egress?.payment_date || "--"}</td>
                   <td className="px-3 py-2 text-xs text-gray-700">{a.egress?.payment_method || "--"}</td>
                   <td className="px-3 py-2 text-xs text-gray-700">{a.egress?.reference_number || "--"}</td>
@@ -203,3 +233,4 @@ export default async function PayableDetailPage({ params }: PageProps) {
     </div>
   );
 }
+

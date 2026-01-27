@@ -213,13 +213,13 @@ export async function createPayable(condominiumId: string, payload: PayableGener
       due_date: parsed.due_date,
       total_amount: parsed.total_amount,
       paid_amount: 0,
-      status: "pendiente_pago",
+      status: "pendiente_aprobacion",
       invoice_number: parsed.invoice_number,
       description: parsed.description || null,
       notes:
-  parsed.planned_payment_method
-    ? `Pago previsto: ${parsed.planned_payment_method || "sin definir"}${parsed.notes ? ` | ${parsed.notes}` : ""}`
-    : parsed.notes || null,
+        parsed.planned_payment_method
+          ? `Pago previsto: ${parsed.planned_payment_method || "sin definir"}${parsed.notes ? ` | ${parsed.notes}` : ""}`
+          : parsed.notes || null,
       invoice_file_url: null,
       folio_op: null,
     })
@@ -272,10 +272,10 @@ export async function updatePayable(condominiumId: string, payableId: string, pa
       invoice_number: parsed.invoice_number,
       description: parsed.description || null,
       notes:
-  parsed.planned_payment_method
-    ? `Pago previsto: ${parsed.planned_payment_method || "sin definir"}${parsed.notes ? ` | ${parsed.notes}` : ""}`
-    : parsed.notes || null,
-      status: "pendiente_pago",
+        parsed.planned_payment_method
+          ? `Pago previsto: ${parsed.planned_payment_method || "sin definir"}${parsed.notes ? ` | ${parsed.notes}` : ""}`
+          : parsed.notes || null,
+      status: "pendiente_aprobacion",
     })
     .eq("id", payableId)
     .eq("condominium_id", condominiumId);
@@ -307,6 +307,52 @@ export async function cancelPayable(condominiumId: string, payableId: string, re
   return { success: true };
 }
 
+export async function approvePayable(condominiumId: string, payableId: string) {
+  const supabase = await createClient();
+  
+  const { data: existing, error: existingError } = await supabase
+    .from("payable_orders")
+    .select("id, status")
+    .eq("id", payableId)
+    .eq("condominium_id", condominiumId)
+    .maybeSingle();
+    
+  if (existingError || !existing) {
+    return { error: "OP no encontrada." };
+  }
+  
+  if (existing.status === "aprobada") {
+    return { error: "La OP ya está aprobada." };
+  }
+  
+  if (["pagada", "parcialmente_pagado"].includes(existing.status)) {
+    return { error: "No puedes aprobar una OP que ya tiene pagos." };
+  }
+  
+  if (existing.status === "anulado") {
+    return { error: "No puedes aprobar una OP anulada." };
+  }
+  
+  // Obtener usuario actual
+  const { data: { user } } = await supabase.auth.getUser();
+  
+  // Llamar función SQL que aprueba y asigna folio
+  const { data, error } = await supabase.rpc('approve_payable_order', {
+    p_payable_id: payableId,
+    p_approved_by_profile_id: user?.id || null
+  });
+  
+  if (error) {
+    console.error("Error aprobando OP", error);
+    return { error: error.message || "No se pudo aprobar la OP." };
+  }
+  
+  revalidatePath(`/app/${condominiumId}/payables`);
+  revalidatePath(`/app/${condominiumId}/payables/${payableId}`);
+  
+  return { success: true };
+}
+
 export async function createEgressForPayables(condominiumId: string, payload: EgressPaymentInput) {
   const parsed = egressPaymentSchema.parse(payload);
   const supabase = await createClient();
@@ -327,8 +373,10 @@ export async function createEgressForPayables(condominiumId: string, payload: Eg
   const supplierMismatch = payables.find((p) => p.supplier_id !== parsed.supplier_id);
   if (supplierMismatch) return { error: "Todas las OP deben ser del mismo proveedor." };
 
-  const invalidStatus = payables.find((p) => ["anulado", "pagado"].includes((p.status || "").toLowerCase()));
-  if (invalidStatus) return { error: "No puedes pagar OP anuladas o ya pagadas." };
+  const invalidStatus = payables.find((p) => 
+    ["anulado", "pagado", "pendiente_aprobacion"].includes((p.status || "").toLowerCase())
+  );
+  if (invalidStatus) return { error: "Solo puedes pagar OP aprobadas. Verifica que todas las OP estén aprobadas." };
 
   const payablesMap = new Map<string, any>();
   payables.forEach((p) => payablesMap.set(p.id, p));
@@ -391,7 +439,7 @@ export async function createEgressForPayables(condominiumId: string, payload: Eg
         ? "pagado"
         : newPaid > 0.009
           ? "parcialmente_pagado"
-          : op.status || "pendiente_pago";
+          : op.status || "pendiente_aprobacion";
     const { error: updateError } = await supabase
       .from("payable_orders")
       .update({
