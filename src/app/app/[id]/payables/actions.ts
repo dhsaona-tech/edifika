@@ -217,11 +217,9 @@ export async function createPayable(condominiumId: string, payload: PayableGener
       invoice_number: parsed.invoice_number,
       description: parsed.description || null,
       notes:
-        parsed.planned_payment_method || parsed.planned_reference
-          ? `Pago previsto: ${parsed.planned_payment_method || "sin definir"}${
-              parsed.planned_reference ? ` | Ref: ${parsed.planned_reference}` : ""
-            }${parsed.notes ? ` | ${parsed.notes}` : ""}`
-          : parsed.notes || null,
+  parsed.planned_payment_method
+    ? `Pago previsto: ${parsed.planned_payment_method || "sin definir"}${parsed.notes ? ` | ${parsed.notes}` : ""}`
+    : parsed.notes || null,
       invoice_file_url: null,
       folio_op: null,
     })
@@ -274,11 +272,9 @@ export async function updatePayable(condominiumId: string, payableId: string, pa
       invoice_number: parsed.invoice_number,
       description: parsed.description || null,
       notes:
-        parsed.planned_payment_method || parsed.planned_reference
-          ? `Pago previsto: ${parsed.planned_payment_method || "sin definir"}${
-              parsed.planned_reference ? ` | Ref: ${parsed.planned_reference}` : ""
-            }${parsed.notes ? ` | ${parsed.notes}` : ""}`
-          : parsed.notes || null,
+  parsed.planned_payment_method
+    ? `Pago previsto: ${parsed.planned_payment_method || "sin definir"}${parsed.notes ? ` | ${parsed.notes}` : ""}`
+    : parsed.notes || null,
       status: "pendiente_pago",
     })
     .eq("id", payableId)
@@ -348,14 +344,8 @@ export async function createEgressForPayables(condominiumId: string, payload: Eg
     }
   }
 
-  // Reservar folio de egreso antes de crear el egreso
-  const { data: folioEgData, error: folioEgError } = await supabase.rpc("reserve_folio_eg", {
-    in_condominium_id: condominiumId,
-  });
-  if (folioEgError) {
-    console.error("Error reservando folio de egreso", folioEgError);
-    return { error: "No se pudo reservar folio de egreso." };
-  }
+  // ✅ ELIMINADO: reserve_folio_eg
+  // El trigger assign_folio_eg() lo hace automáticamente
 
   const { data: egress, error: egressError } = await supabase
     .from("egresses")
@@ -370,7 +360,7 @@ export async function createEgressForPayables(condominiumId: string, payload: Eg
       reference_number: parsed.reference_number || null,
       notes: parsed.notes || null,
       expense_item_id: payables[0]?.expense_item_id || null,
-      folio_eg: folioEgData || null, // Asignar el folio reservado
+      // ✅ NO enviar folio_eg (el trigger lo asigna automáticamente)
       status: "disponible",
     })
     .select("id")

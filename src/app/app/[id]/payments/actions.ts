@@ -124,81 +124,6 @@ export async function listarPaymentsAnulados(condominiumId: string) {
   return listarPayments(condominiumId, { status: "cancelado" });
 }
 
-export async function getPaymentDetail(condominiumId: string, paymentId: string) {
-  const supabase = await createClient();
-  const { data: payment, error: paymentError } = await supabase
-    .from("payments")
-    .select("*")
-    .eq("id", paymentId)
-    .eq("condominium_id", condominiumId)
-    .maybeSingle();
-
-  if (paymentError || !payment) {
-    console.error("Error leyendo payment", paymentError);
-    return null;
-  }
-
-  const related = await Promise.all([
-    payment.unit_id
-      ? supabase.from("units").select("id, full_identifier, identifier").eq("id", payment.unit_id).maybeSingle()
-      : Promise.resolve({ data: null }),
-    payment.payer_profile_id
-      ? supabase.from("profiles").select("id, full_name").eq("id", payment.payer_profile_id).maybeSingle()
-      : Promise.resolve({ data: null }),
-    payment.financial_account_id
-      ? supabase.from("financial_accounts").select("id, bank_name, account_number").eq("id", payment.financial_account_id).maybeSingle()
-      : Promise.resolve({ data: null }),
-    payment.expense_item_id
-      ? supabase.from("expense_items").select("id, name").eq("id", payment.expense_item_id).maybeSingle()
-      : Promise.resolve({ data: null }),
-    payment.unit_id
-      ? supabase
-          .from("unit_contacts")
-          .select("unit_id, is_primary_contact, end_date, profiles(id, full_name)")
-          .eq("unit_id", payment.unit_id)
-          .eq("is_primary_contact", true)
-          .is("end_date", null)
-          .maybeSingle()
-      : Promise.resolve({ data: null }),
-  ]);
-
-  const unit = related[0]?.data || null;
-  const payer = related[1]?.data || related[4]?.data?.profiles || null;
-  const account = related[2]?.data || null;
-  const expenseItem = related[3]?.data || null;
-
-  const { data: allocations } = await supabase
-    .from("payment_allocations")
-    .select(
-      `
-      id,
-      amount_allocated,
-      charge:charges(
-        id,
-        unit_id,
-        period,
-        description,
-        due_date,
-        total_amount,
-        paid_amount,
-        balance,
-        expense_item:expense_items(name)
-      )
-    `
-    )
-    .eq("payment_id", paymentId);
-
-  // Enrich charges with unit label if same as payment
-  return {
-    ...payment,
-    unit,
-    payer,
-    financial_account: account,
-    expense_item: expenseItem,
-    allocations: allocations || [],
-  };
-}
-
 export async function getPendingCharges(condominiumId: string, unitId: string): Promise<ChargeForPayment[]> {
   const supabase = await createClient();
   const { data, error } = await supabase
@@ -223,10 +148,10 @@ export async function getPendingCharges(condominiumId: string, unitId: string): 
     console.error("Error cargando cargos pendientes", error);
     return [];
   }
-  return (data || []).map((c) => ({
+  return (data || []).map((c: any) => ({
     id: c.id,
     period: c.period,
-    expense_item: c.expense_item,
+    expense_item: Array.isArray(c.expense_item) ? c.expense_item[0] : c.expense_item,
     description: c.description,
     due_date: c.due_date,
     total_amount: c.total_amount,
@@ -297,13 +222,8 @@ export async function createPayment(
     return { error: "No puedes asignar mas que el saldo del cargo." };
   }
 
-  const { data: folioData, error: folioError } = await supabase.rpc("reserve_folio_rec", {
-    in_condominium_id: condominiumId,
-  });
-  if (folioError) {
-    console.error("Error reservando folio", folioError);
-    return { error: "No se pudo reservar folio de recibo." };
-  }
+  // ✅ ELIMINADO: reserve_folio_rec
+  // El trigger assign_folio_rec() lo hace automáticamente
 
   const { data, error } = await supabase.rpc("apply_payment_to_charges", {
     in_condominium_id: condominiumId,
@@ -320,7 +240,7 @@ export async function createPayment(
       charge_id: a.charge_id,
       amount_allocated: a.amount_allocated,
     })),
-    in_folio_rec: folioData as number,
+    // ✅ ELIMINADO: in_folio_rec (el trigger lo asigna automáticamente)
   });
 
   if (error) {
@@ -342,25 +262,33 @@ export async function cancelPayment(
   if (!normalizedReason) {
     return { error: "Debes ingresar el motivo de anulación." };
   }
+  
   const supabase = await createClient();
+  
   let profileId = cancelledByProfileId;
   if (!profileId) {
     const user = await getCurrentUser();
-    profileId = user?.id || null;
+    profileId = user?.id || undefined;
   }
+  
   const cancelledBy = profileId || null;
-  const { error } = await supabase.rpc("cancel_payment", {
-    in_payment_id: paymentId,
-    in_reason: normalizeReason(normalizedReason),
-    in_profile_id: cancelledBy,
+  
+  // ✅ Usar la función anular_payment que instalamos esta mañana
+  const { data, error } = await supabase.rpc('anular_payment', {
+    p_payment_id: paymentId,
+    p_cancelled_by_profile_id: cancelledBy,
+    p_cancellation_reason: normalizedReason
   });
+  
   if (error) {
-    console.error("Error cancelando payment", error);
-    return { error: "No se pudo anular el ingreso." };
+    console.error("Error anulando payment", error);
+    return { error: error.message || "No se pudo anular el ingreso." };
   }
+  
   revalidatePath(`/app/${condominiumId}/payments`);
   revalidatePath(`/app/${condominiumId}/payments/${paymentId}`);
-  return { success: true };
+  
+  return { success: true, result: data };
 }
 
 export async function listPendingReports(condominiumId: string) {
@@ -372,7 +300,6 @@ export async function listPendingReports(condominiumId: string) {
     .eq("status", "pendiente_revision")
     .order("payment_date", { ascending: false });
   if (error) {
-    // Si la tabla no existe o RLS bloquea, evitamos romper la vista
     console.warn("No se pudieron cargar payment_reports (se devuelve lista vacía). Detalle:", error?.message || error);
     return [];
   }
