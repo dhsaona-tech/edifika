@@ -1,0 +1,65 @@
+{
+  "node": {
+    "60dcd9e5667f1d0f8a85aa0bff39dd4c33bc9ed704": {
+      "workers": {
+        "app/app/[id]/residents/page": {
+          "moduleId": "[project]/.next-internal/server/app/app/[id]/residents/page/actions.js { ACTIONS_MODULE0 => \"[project]/src/app/app/[id]/residents/actions.ts [app-rsc] (ecmascript)\" } [app-rsc] (server actions loader, ecmascript)",
+          "async": false,
+          "exportedName": "getResidentProfile",
+          "filename": "src/app/app/[id]/residents/actions.ts"
+        }
+      },
+      "layer": {
+        "app/app/[id]/residents/page": "rsc"
+      },
+      "exportedName": "getResidentProfile",
+      "filename": "src/app/app/[id]/residents/actions.ts"
+    },
+    "705cfee407e3fb4ef78b12e02023808205584f4774": {
+      "workers": {
+        "app/app/[id]/residents/page": {
+          "moduleId": "[project]/.next-internal/server/app/app/[id]/residents/page/actions.js { ACTIONS_MODULE0 => \"[project]/src/app/app/[id]/residents/actions.ts [app-rsc] (ecmascript)\" } [app-rsc] (server actions loader, ecmascript)",
+          "async": false,
+          "exportedName": "createOrLinkResident",
+          "filename": "src/app/app/[id]/residents/actions.ts"
+        }
+      },
+      "layer": {
+        "app/app/[id]/residents/page": "action-browser"
+      },
+      "exportedName": "createOrLinkResident",
+      "filename": "src/app/app/[id]/residents/actions.ts"
+    },
+    "70dae7fef89bbf038feb5b3edb077fc6b18c5f5f69": {
+      "workers": {
+        "app/app/[id]/residents/page": {
+          "moduleId": "[project]/.next-internal/server/app/app/[id]/residents/page/actions.js { ACTIONS_MODULE0 => \"[project]/src/app/app/[id]/residents/actions.ts [app-rsc] (ecmascript)\" } [app-rsc] (server actions loader, ecmascript)",
+          "async": false,
+          "exportedName": "updateResidentProfile",
+          "filename": "src/app/app/[id]/residents/actions.ts"
+        }
+      },
+      "layer": {
+        "app/app/[id]/residents/page": "rsc"
+      },
+      "exportedName": "updateResidentProfile",
+      "filename": "src/app/app/[id]/residents/actions.ts"
+    },
+    "78b22bff0adf98ce9b819cbe47c66096ea5f5754b3": {
+      "workers": {
+        "app/app/[id]/residents/page": {
+          "moduleId": "[project]/.next-internal/server/app/app/[id]/residents/page/actions.js { ACTIONS_MODULE0 => \"[project]/src/app/app/[id]/residents/actions.ts [app-rsc] (ecmascript)\" } [app-rsc] (server actions loader, ecmascript)",
+          "async": false,
+          "exportedName": "getResidents",
+          "filename": "src/app/app/[id]/residents/actions.ts"
+        }
+      },
+      "layer": {
+        "app/app/[id]/residents/page": "rsc"
+      },
+      "exportedName": "getResidents",
+      "filename": "src/app/app/[id]/residents/actions.ts"
+    }
+  },
+  "edge": {}
+}

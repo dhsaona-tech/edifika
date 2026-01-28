@@ -1,132 +1,106 @@
-import { Building2, Plus, CheckCircle, AlertTriangle } from "lucide-react";
 import Link from "next/link";
-import { getUnits, getCondoTotalAliquot, getActiveBudgetInfo } from "./actions";
+import { getUnits } from "./actions";
+import UnitsStatsCards from "./components/UnitsStatsCards";
 import UnitsTable from "./components/UnitsTable";
-import UnitsToolbar from "./components/UnitsToolbar";
 
-// NOTA: esta página se mantuvo como servidor en tu código original;
-// aquí reusamos la lógica pero movemos la barra a un layout unificado.
-
-interface PageProps {
-  params: Promise<{ id: string }>;
-  searchParams: Promise<{ query?: string; type?: string }>;
-}
+type PageProps = {
+  params: { id: string } | Promise<{ id: string }>;
+  searchParams?:
+    | {
+        search?: string;
+        type?: string;
+        status?: string;
+      }
+    | Promise<{
+        search?: string;
+        type?: string;
+        status?: string;
+      }>;
+};
 
 export default async function UnitsPage({ params, searchParams }: PageProps) {
-  const { id } = await params;
-  const { query, type } = await searchParams;
+  const resolvedParams = await params;
+  const resolvedSearch = await searchParams;
+  const condominiumId = resolvedParams.id;
 
-  const [units, totalAliquot, activeBudget] = await Promise.all([
-    getUnits(id, query || "", type || "todos"),
-    getCondoTotalAliquot(id),
-    getActiveBudgetInfo(id),
-  ]);
+  const searchQuery = resolvedSearch?.search;
+  const typeFilter = resolvedSearch?.type;
 
-  const difference = 100 - totalAliquot;
-  const isWithinTolerance = Math.abs(difference) < 0.1;
+  const units = await getUnits(condominiumId, searchQuery, typeFilter);
 
-  let statusColor = "bg-yellow-50 text-yellow-700 border-yellow-200";
-  let statusIcon = <AlertTriangle size={12} />;
-  let statusText = "";
-
-  if (isWithinTolerance) {
-    statusColor = "bg-green-50 text-green-700 border-green-200";
-    statusIcon = <CheckCircle size={12} />;
-    statusText = "100%";
-  } else {
-    if (difference > 0) statusText = `Falta ${difference.toFixed(2)}%`;
-    else statusText = `Excede ${Math.abs(difference).toFixed(2)}%`;
-  }
-
-  // Calcular valor estimado por unidad si hay presupuesto activo
-  const activeUnits = units.filter((u) => u.status === "activa");
-  const monthlyTotal = activeBudget ? activeBudget.total_annual_amount / 12 : 0;
-  const method = activeBudget?.distribution_method || "por_aliquota";
-  const chargesByUnit: Record<string, number | null> = {};
-
-  const round2 = (n: number) => Math.round(n * 100) / 100;
-
-  if (activeBudget && activeUnits.length > 0) {
-    if (method === "igualitario") {
-      const base = monthlyTotal / activeUnits.length;
-      activeUnits.forEach((u) => {
-        chargesByUnit[u.id] = round2(base);
-      });
-    } else if (method === "por_aliquota" && totalAliquot > 0) {
-      activeUnits.forEach((u) => {
-        const val = monthlyTotal * (Number(u.aliquot || 0) / totalAliquot);
-        chargesByUnit[u.id] = round2(val);
-      });
-    } else if (method === "manual_por_unidad") {
-      activeUnits.forEach((u) => {
-        chargesByUnit[u.id] = null; // pendiente de definir manual
-      });
+  // Calcular stats
+  const stats = {
+    total: units.length,
+    active: units.filter(u => u.status === 'activa').length,
+    inactive: units.filter(u => u.status === 'inactiva').length,
+    byType: {
+      departamento: units.filter(u => u.type === 'departamento').length,
+      casa: units.filter(u => u.type === 'casa').length,
+      bodega: units.filter(u => u.type === 'bodega').length,
+      parqueo: units.filter(u => u.type === 'parqueo' || u.type === 'parqueadero').length,
+      local: units.filter(u => u.type === 'local').length,
+      otro: units.filter(u => !['departamento', 'casa', 'bodega', 'parqueo', 'parqueadero', 'local'].includes(u.type)).length,
     }
-  }
+  };
 
   return (
-    <div className="space-y-3">
-      {/* HEADER COMPACTO */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-gray-200 pb-3">
+    <div className="space-y-4">
+      {/* Header compacto */}
+      <div className="flex items-center justify-between">
         <div>
-          <div className="flex items-center gap-2">
-            <h1 className="text-lg font-bold text-gray-800 tracking-tight">Gestión de Unidades</h1>
-            <span className="bg-gray-100 text-gray-600 px-1.5 py-0.5 rounded text-[10px] font-medium border border-gray-200">
-              {units.length}
-            </span>
-
-            <div className={`flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-bold border ${statusColor}`}>
-              {statusIcon}
-              <span>{totalAliquot.toFixed(2)}%</span>
-              {!isWithinTolerance && (
-                <span className="opacity-80 ml-1 font-normal border-l pl-1 border-current">
-                  {statusText}
-                </span>
-              )}
-            </div>
-          </div>
+          <h1 className="text-xl font-bold text-gray-900">Unidades</h1>
+          <p className="text-[11px] text-gray-500">Gestión de departamentos, casas, bodegas y parqueos</p>
         </div>
-
         <Link
-          href={`/app/${id}/units/new`}
-          className="flex items-center justify-center gap-1.5 bg-brand hover:bg-brand-dark text-white px-3 py-1.5 rounded-md transition-all shadow-sm hover:shadow-md font-medium text-xs"
+          href={`/app/${condominiumId}/units/new`}
+          className="inline-flex items-center gap-1.5 rounded-lg bg-brand text-white px-3 py-1.5 text-xs font-semibold shadow-sm hover:bg-brand-dark transition-colors"
         >
-          <Plus size={14} />
-          <span>Nueva Unidad</span>
+          <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
+          </svg>
+          Nueva unidad
         </Link>
       </div>
 
-      {/* TOOLBAR UNIFICADA */}
-      <UnitsToolbar condominiumId={id} />
+      {/* Stats Cards */}
+      <UnitsStatsCards stats={stats} />
 
-      {/* TABLA */}
-      {units.length === 0 ? (
-        <div className="bg-white rounded-lg border border-dashed border-gray-300 p-8 flex flex-col items-center justify-center text-center">
-          <div className="w-10 h-10 bg-slate-50 rounded-full flex items-center justify-center mb-2 text-gray-300">
-            <Building2 size={20} />
+      {/* Filtros */}
+      <div className="bg-white rounded-lg border border-gray-200 p-3">
+        <form method="GET" className="flex items-center gap-2">
+          <div className="flex-1">
+            <input
+              type="text"
+              name="search"
+              placeholder="Buscar unidad..."
+              defaultValue={searchQuery || ""}
+              className="w-full px-3 py-1.5 border border-gray-300 rounded-md text-xs focus:ring-2 focus:ring-brand focus:border-brand"
+            />
           </div>
-          <p className="text-xs text-gray-500">
-            {query || type ? "No hay resultados." : "No hay unidades registradas."}
-          </p>
-          {!query && (
-            <Link
-              href={`/app/${id}/units/new`}
-              className="mt-2 text-brand font-semibold hover:underline underline-offset-4 text-xs"
-            >
-              Crear unidad &rarr;
-            </Link>
-          )}
-        </div>
-      ) : (
-        <UnitsTable
-          units={units}
-          condominiumId={id}
-          estimatedCharges={chargesByUnit}
-          distributionMethod={method}
-        />
-      )}
+          <select
+            name="type"
+            defaultValue={typeFilter || ""}
+            className="px-3 py-1.5 border border-gray-300 rounded-md text-xs focus:ring-2 focus:ring-brand focus:border-brand"
+          >
+            <option value="">Todos los tipos</option>
+            <option value="departamento">🏢 Departamento</option>
+            <option value="casa">🏠 Casa</option>
+            <option value="local">🏪 Local</option>
+            <option value="bodega">📦 Bodega</option>
+            <option value="parqueo">🚗 Parqueo</option>
+            <option value="otro">🔲 Otro</option>
+          </select>
+          <button
+            type="submit"
+            className="px-4 py-1.5 bg-brand text-white rounded-md font-semibold text-xs hover:bg-brand-dark transition-colors whitespace-nowrap"
+          >
+            Buscar
+          </button>
+        </form>
+      </div>
+
+      {/* Table */}
+      <UnitsTable units={units} condominiumId={condominiumId} />
     </div>
   );
 }
-
-// Toolbar se movió a componente cliente en components/UnitsToolbar.tsx
