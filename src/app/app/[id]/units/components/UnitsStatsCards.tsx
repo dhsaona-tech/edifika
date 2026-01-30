@@ -32,8 +32,8 @@ export default function UnitsStatsCards({ stats }: { stats: any }) {
             </p>
           </div>
           <div className="flex gap-3 text-xs pt-2 border-t border-gray-100">
-            <span className="text-gray-600">{stats.byType.departamento} deptos</span>
-            <span className="text-gray-600">{stats.byType.casa} casas</span>
+            <span className="text-gray-600">{stats.byType.departamento} Dptos</span>
+            <span className="text-gray-600">{stats.byType.casa} Casas</span>
           </div>
         </div>
   

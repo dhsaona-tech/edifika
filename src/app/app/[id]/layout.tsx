@@ -13,11 +13,10 @@ export default async function AppLayout({
   return (
     <div className="min-h-screen bg-slate-50">
       <Sidebar condominiumId={id} />
-      <TopHeader />
+      <TopHeader condominiumId={id} />  {/* ← AGREGAR condominiumId */}
       
-      {/* AJUSTE DE MÁRGENES: ml-52 (Sidebar) y pt-14 (Header) */}
       <div className="ml-52 pt-14 transition-all duration-300">
-        <main className="p-6"> {/* Padding interno un poco más compacto */}
+        <main className="p-6">
           {children}
         </main>
       </div>

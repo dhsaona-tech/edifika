@@ -8,7 +8,7 @@ import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 
 // ==========================================
-// 1. FUNCIONES DE LECTURA
+// FUNCIONES DE LECTURA
 // ==========================================
 
 export async function getUnits(condominiumId: string, query?: string, typeFilter?: string) {
@@ -29,11 +29,9 @@ export async function getUnits(condominiumId: string, query?: string, typeFilter
   }
 
   const { data, error } = await dbQuery;
-
   if (error) return [];
+  
   const units = (data as UnitSummary[]) || [];
-
-  // Enriquecer con resumen de deuda (cargos pendientes por unidad)
   const unitIds = units.map((u) => u.id);
   if (unitIds.length === 0) return units;
 
@@ -65,7 +63,6 @@ export async function getUnits(condominiumId: string, query?: string, typeFilter
     debtMap.set(c.unit_id, prev);
   });
 
-  // Mapear contactos por unidad
   const contactsMap = new Map<string, Array<{
     id: string;
     full_name: string;
@@ -77,9 +74,7 @@ export async function getUnits(condominiumId: string, query?: string, typeFilter
     const unitId = c.unit_id;
     const profile = Array.isArray(c.profile) ? c.profile[0] : c.profile;
     
-    if (!contactsMap.has(unitId)) {
-      contactsMap.set(unitId, []);
-    }
+    if (!contactsMap.has(unitId)) contactsMap.set(unitId, []);
     
     contactsMap.get(unitId)!.push({
       id: profile?.id || "",
@@ -92,8 +87,6 @@ export async function getUnits(condominiumId: string, query?: string, typeFilter
   return units.map((u) => {
     const debt = debtMap.get(u.id) || { pending: 0, total: 0 };
     const unitContacts = contactsMap.get(u.id) || [];
-    
-    // Separar dueños e inquilinos
     const owners = unitContacts.filter(c => c.relationship_type === "OWNER");
     const tenants = unitContacts.filter(c => c.relationship_type === "TENANT");
     
@@ -112,15 +105,15 @@ export async function getUnits(condominiumId: string, query?: string, typeFilter
 }
 
 export async function getCondoTotalAliquot(condominiumId: string) {
-    const supabase = await createClient();
-    const { data, error } = await supabase
-      .from("view_condo_aliquot_total")
-      .select("total_aliquot")
-      .eq("condominium_id", condominiumId)
-      .single();
-    
-    if (error || !data) return 0;
-    return Number(data.total_aliquot) || 0;
+  const supabase = await createClient();
+  const { data, error } = await supabase
+    .from("view_condo_aliquot_total")
+    .select("total_aliquot")
+    .eq("condominium_id", condominiumId)
+    .single();
+  
+  if (error || !data) return 0;
+  return Number(data.total_aliquot) || 0;
 }
 
 export async function getCondominiumConfig(id: string): Promise<Pick<Condominium, 'use_blocks' | 'developer_profile_id'> | null> {
@@ -136,7 +129,6 @@ export async function getCondominiumConfig(id: string): Promise<Pick<Condominium
 export async function getUnitById(unitId: string) {
   const supabase = await createClient();
   
-  // 1. Datos básicos de la unidad
   const { data: unitData, error } = await supabase
     .from("units")
     .select(`*, condominium:condominiums!inner(id, name)`)
@@ -145,45 +137,66 @@ export async function getUnitById(unitId: string) {
 
   if (error || !unitData) return null;
 
-  // 2. Contactos (Para calcular responsables)
   const { data: contacts } = await supabase
     .from("unit_contacts")
     .select(`
       id, 
       is_primary_contact, 
       is_current_occupant, 
-      relationship_type, 
-      profile:profiles!inner(full_name)
+      relationship_type,
+      end_date,
+      profile:profiles!inner(
+        id,
+        full_name, 
+        first_name, 
+        last_name,
+        email,
+        phone,
+        national_id,
+        avatar_url
+      )
     `)
     .eq("unit_id", unitId)
-    .is("end_date", null); 
+    .order("is_primary_contact", { ascending: false })
+    .order("start_date", { ascending: false });
 
-  // FIX DE TIPOS
   const safeContacts = (contacts || []) as any[];
-
-  const getName = (c: any) => {
-      if (!c || !c.profile) return null;
-      return Array.isArray(c.profile) ? c.profile[0]?.full_name : c.profile.full_name;
-  };
-
-  // Lógica visual: Si no hay nadie marcado, mostrar al primer dueño
-  const primaryPayer = safeContacts.find(c => c.is_primary_contact);
-  const fallbackOwner = safeContacts.find(c => c.relationship_type === 'OWNER');
+  const primaryContact = safeContacts.find(c => c.is_primary_contact && !c.end_date);
+  const fallbackOwner = safeContacts.find(c => c.relationship_type === 'OWNER' && !c.end_date);
   
-  const primaryName = getName(primaryPayer) || getName(fallbackOwner) || "Sin Asignar";
+  const contactForName = primaryContact || fallbackOwner;
+  const primaryPayerProfile = contactForName 
+    ? (Array.isArray(contactForName.profile) ? contactForName.profile[0] : contactForName.profile)
+    : null;
+
+  const primaryOwnerName = primaryPayerProfile?.full_name || "Sin asignar";
 
   const occupantsList = safeContacts
-    .filter(c => c.is_current_occupant)
-    .map(c => getName(c))
+    .filter(c => c.is_current_occupant && !c.end_date)
+    .map(c => {
+      const profile = Array.isArray(c.profile) ? c.profile[0] : c.profile;
+      return profile?.full_name || "Sin nombre";
+    })
     .filter(n => n)
     .join(", ");
 
   return {
     ...unitData,
-    primary_owner_name: primaryName,
+    primary_owner_name: primaryOwnerName,
+    primary_payer_profile: primaryPayerProfile,
     current_occupant_name: occupantsList || null,
-    payer_contact_id: primaryPayer?.id || null
-  } as UnitSummary & { payer_contact_id?: string | null };
+    payer_contact_id: contactForName?.id || null,
+  } as UnitSummary & { 
+    payer_contact_id?: string | null;
+    primary_payer_profile?: {
+      id: string;
+      full_name: string;
+      email?: string | null;
+      phone?: string | null;
+      national_id?: string | null;
+      avatar_url?: string | null;
+    } | null;
+  };
 }
 
 export async function getSubUnits(condominiumId: string, parentUnitId: string) {
@@ -235,20 +248,17 @@ export async function getUnitContacts(unitId: string) {
 }
 
 // ==========================================
-// 2. FUNCIONES DE ESCRITURA (ACTIONS)
+// FUNCIONES DE ESCRITURA
 // ==========================================
 
-// --- A. ELEGIR PAGADOR PRINCIPAL (RADIO BUTTON) ---
 export async function setPrimaryPayer(condominiumId: string, unitId: string, contactId: string) {
   const supabase = await createClient();
   
-  // 1. Quitamos el rol de principal a TODOS
   await supabase
     .from("unit_contacts")
     .update({ is_primary_contact: false })
     .eq("unit_id", unitId);
 
-  // 2. Asignamos el principal al elegido
   const { error } = await supabase
     .from("unit_contacts")
     .update({ is_primary_contact: true, receives_debt_emails: true })
@@ -260,7 +270,6 @@ export async function setPrimaryPayer(condominiumId: string, unitId: string, con
   return { success: true };
 }
 
-// --- B. TOGGLE EMAIL ---
 export async function toggleDebtEmail(condominiumId: string, unitId: string, contactId: string, receivesEmails: boolean) {
   const supabase = await createClient();
   const { error } = await supabase
@@ -273,7 +282,6 @@ export async function toggleDebtEmail(condominiumId: string, unitId: string, con
   return { success: true };
 }
 
-// --- C. TOGGLE OCUPANTE ---
 export async function toggleOccupancy(condominiumId: string, unitId: string, contactId: string, isOccupant: boolean) {
   const supabase = await createClient();
   const { error } = await supabase
@@ -287,13 +295,12 @@ export async function toggleOccupancy(condominiumId: string, unitId: string, con
 }
 
 export async function updateCondoBlocksConfig(condominiumId: string, useBlocks: boolean) {
-    const supabase = await createClient();
-    const { error } = await supabase.from("condominiums").update({ use_blocks: useBlocks }).eq("id", condominiumId);
-    if (error) throw new Error("Error al guardar configuración.");
-    revalidatePath(`/app/${condominiumId}/units/new`);
+  const supabase = await createClient();
+  const { error } = await supabase.from("condominiums").update({ use_blocks: useBlocks }).eq("id", condominiumId);
+  if (error) throw new Error("Error al guardar configuración.");
+  revalidatePath(`/app/${condominiumId}/units/new`);
 }
 
-// --- CREAR UNIDAD ---
 const CreateUnitSchema = z.object({
   identifier: z.string().min(1, "Identificador obligatorio"),
   type: z.string().min(1, "Tipo obligatorio"),
@@ -312,8 +319,6 @@ const CreateUnitSchema = z.object({
 
 export async function createUnit(condominiumId: string, formData: FormData) {
   const supabase = await createClient();
-
-  // Usa getCurrentUser que tiene caché para evitar rate limit
   const user = await getCurrentUser();
   if (!user) return { error: "Debes iniciar sesión." };
 
@@ -340,7 +345,6 @@ export async function createUnit(condominiumId: string, formData: FormData) {
   let final_profile_id = user.id;
   let final_relationship_type = data.initial_owner_type;
 
-  // BUSCAR O CREAR PERFIL (Para evitar duplicados al crear unidad con dueño rápido)
   if (data.is_quick_owner && data.initial_owner_type === 'OWNER' && data.owner_name) {
     const { data: existing } = await supabase.from("profiles")
         .select("id")
@@ -363,7 +367,6 @@ export async function createUnit(condominiumId: string, formData: FormData) {
         });
         final_profile_id = newProfileId;
     }
-    // Asegurar membresía
     await supabase.from("memberships").upsert({ condominium_id: condominiumId, profile_id: final_profile_id, role: 'RESIDENT', status: 'activo' }, { onConflict: 'condominium_id, profile_id' });
   }
 
@@ -394,10 +397,8 @@ export async function createUnit(condominiumId: string, formData: FormData) {
       ownership_share: 100.00
   });
 
-  // CREAR CARGO INICIAL SI EL VALOR PENDIENTE ES DIFERENTE DE 0
   const initialBalance = Number(data.initial_balance || 0);
   if (initialBalance !== 0) {
-    // Buscar o crear un rubro especial para "Saldo Inicial"
     const { data: saldoInicialRubro } = await supabase
       .from("expense_items")
       .select("id")
@@ -409,7 +410,6 @@ export async function createUnit(condominiumId: string, formData: FormData) {
     if (saldoInicialRubro) {
       expenseItemId = saldoInicialRubro.id;
     } else {
-      // Crear rubro "Saldo Inicial" si no existe
       const { data: newRubro, error: rubroError } = await supabase
         .from("expense_items")
         .insert({
@@ -424,7 +424,6 @@ export async function createUnit(condominiumId: string, formData: FormData) {
 
       if (rubroError || !newRubro) {
         console.error("Error creando rubro Saldo Inicial", rubroError);
-        // Continuar sin crear el cargo si falla
       } else {
         expenseItemId = newRubro.id;
       }
@@ -487,7 +486,6 @@ export async function updateUnit(unitId: string, condominiumId: string, formData
   return { success: true };
 }
 
-// --- REGISTRAR INQUILINO (CORREGIDO: BUSCAR O CREAR) ---
 export async function registerNewTenant(condominiumId: string, unitId: string, formData: FormData) {
     const supabase = await createClient();
     const first_name = formData.get("first_name") as string;
@@ -499,7 +497,6 @@ export async function registerNewTenant(condominiumId: string, unitId: string, f
 
     let profileId = "";
 
-    // 1. BUSCAR SI EXISTE
     const { data: existing } = await supabase.from("profiles")
         .select("id")
         .or(`national_id.eq.${national_id},email.eq.${email}`)
@@ -508,7 +505,6 @@ export async function registerNewTenant(condominiumId: string, unitId: string, f
     if (existing) {
         profileId = existing.id;
     } else {
-        // 2. CREAR SI NO EXISTE
         const newId = crypto.randomUUID();
         const { error } = await supabase.from("profiles").insert({
             id: newId, full_name: `${first_name} ${last_name}`, first_name, last_name, national_id, email, contact_preference: 'Correo'
@@ -517,15 +513,12 @@ export async function registerNewTenant(condominiumId: string, unitId: string, f
         profileId = newId;
     }
 
-    // 3. ASEGURAR MEMBRESÍA
     await supabase.from("memberships").upsert({
         condominium_id: condominiumId, profile_id: profileId, role: 'RESIDENT', status: 'activo'
     }, { onConflict: 'condominium_id, profile_id' });
 
-    // 4. QUITAR TITULARIDAD A TODOS
     await supabase.from("unit_contacts").update({ is_primary_contact: false }).eq("unit_id", unitId);
 
-    // 5. VINCULAR AL NUEVO (COMO TITULAR)
     await supabase.from("unit_contacts").insert({
         unit_id: unitId,
         profile_id: profileId,
@@ -554,7 +547,6 @@ export async function assignAccessory(condominiumId: string, parentUnitId: strin
   redirect(`/app/${condominiumId}/units/${parentUnitId}`);
 }
 
-// --- REGISTRAR VENTA (CORREGIDO: BUSCAR O CREAR) ---
 export async function registerSale(condominiumId: string, unitId: string, formData: FormData) {
   const supabase = await createClient();
   const first_name = formData.get("first_name") as string;
@@ -568,7 +560,6 @@ export async function registerSale(condominiumId: string, unitId: string, formDa
 
   let profileId = "";
 
-  // 1. BUSCAR SI EXISTE
   const { data: existing } = await supabase.from("profiles")
       .select("id")
       .or(`national_id.eq.${national_id},email.eq.${email}`)
@@ -577,7 +568,6 @@ export async function registerSale(condominiumId: string, unitId: string, formDa
   if (existing) {
       profileId = existing.id;
   } else {
-      // 2. CREAR SI NO EXISTE
       const newId = crypto.randomUUID();
       const { error } = await supabase.from("profiles").insert({
           id: newId, full_name: `${first_name} ${last_name}`, first_name, last_name, national_id, email, phone, notes, contact_preference: 'Correo'
@@ -586,22 +576,18 @@ export async function registerSale(condominiumId: string, unitId: string, formDa
       profileId = newId;
   }
 
-  // 3. ASEGURAR MEMBRESÍA
   await supabase.from("memberships").upsert({
       condominium_id: condominiumId, profile_id: profileId, role: 'RESIDENT', status: 'activo'
   }, { onConflict: 'condominium_id, profile_id' });
 
-  // 4. CERRAR DUEÑO ANTERIOR
   await supabase.from("unit_contacts")
       .update({ end_date: start_date, is_current_occupant: false, is_primary_contact: false })
       .eq("unit_id", unitId)
       .eq("relationship_type", "OWNER")
       .is("end_date", null);
 
-  // 5. LIMPIAR TITULARIDAD DE CUALQUIER OTRO (Inquilinos, etc)
   await supabase.from("unit_contacts").update({ is_primary_contact: false }).eq("unit_id", unitId);
 
-  // 6. ASIGNAR NUEVO DUEÑO (TITULAR)
   await supabase.from("unit_contacts").insert({
       unit_id: unitId,
       profile_id: profileId,
@@ -617,28 +603,23 @@ export async function registerSale(condominiumId: string, unitId: string, formDa
   redirect(`/app/${condominiumId}/units/${unitId}`);
 }
 
-// --- FINALIZAR RELACIÓN (MUDANZA) ---
-// Lógica mejorada: Si el titular se va, se busca un reemplazo (Dueño) para que no quede vacío
 export async function endContactRelationship(condominiumId: string, unitId: string, contactId: string) {
     const supabase = await createClient();
     
-    // Verificar si el que se va es el titular
     const { data: contactLeaving } = await supabase.from("unit_contacts").select("is_primary_contact").eq("id", contactId).single();
     const wasPrimary = contactLeaving?.is_primary_contact;
 
-    // Marcar salida
     await supabase.from("unit_contacts")
         .update({ end_date: new Date().toISOString(), is_current_occupant: false, is_primary_contact: false })
         .eq("id", contactId);
 
-    // Si se fue el titular, buscar un dueño activo para pasarle la posta
     if (wasPrimary) {
         const { data: owner } = await supabase.from("unit_contacts")
             .select("id")
             .eq("unit_id", unitId)
             .eq("relationship_type", "OWNER")
             .is("end_date", null)
-            .neq("id", contactId) // Que no sea el mismo que se acaba de ir
+            .neq("id", contactId)
             .limit(1)
             .maybeSingle();
         
@@ -653,7 +634,6 @@ export async function endContactRelationship(condominiumId: string, unitId: stri
 export async function getActiveBudgetInfo(condominiumId: string) {
   const supabase = await createClient();
 
-  // Obtener el presupuesto activo del condominio
   const { data: condo, error: condoError } = await supabase
     .from("condominiums")
     .select("active_budget_master_id")
@@ -692,7 +672,6 @@ export async function getActiveUnitsCount(condominiumId: string) {
   return count || 0;
 }
 
-// --- RESUMEN DE CARGOS POR UNIDAD (PENDIENTES Y TOTAL GENERADO) ---
 export async function getUnitChargesSummary(condominiumId: string, unitId: string) {
   const supabase = await createClient();
 
@@ -701,7 +680,7 @@ export async function getUnitChargesSummary(condominiumId: string, unitId: strin
     .select("total_amount, balance, status")
     .eq("condominium_id", condominiumId)
     .eq("unit_id", unitId)
-    .neq("status", "cancelado"); // ocultamos los anulados para el resumen
+    .neq("status", "cancelado");
 
   if (error || !data) {
     return { totalGenerado: 0, saldoPendiente: 0, totalCargos: 0 };
