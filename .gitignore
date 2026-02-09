@@ -1,0 +1,20 @@
+# Dependencias y compilación
+node_modules/
+.next/
+out/
+build/
+dist/
+
+# Archivos de Claude y herramientas
+.claude/
+.claude-worktrees/
+.cursor/
+
+# Archivos del sistema y secretos
+.env
+.env.local
+.DS_Store
+Thumbs.db
+
+# Bloquear cualquier archivo llamado nul por si acaso
+nul
