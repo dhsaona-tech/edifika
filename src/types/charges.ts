@@ -1,4 +1,4 @@
-export type ChargeStatus = "pendiente" | "pagado" | "cancelado" | "eliminado";
+export type ChargeStatus = "pendiente" | "parcialmente_pagado" | "pagado" | "cancelado" | "eliminado";
 export type ChargeType =
   | "expensa_mensual"
   | "servicio_basico"
@@ -60,6 +60,8 @@ export type ChargeBatchType =
   | "extraordinaria_masiva"
   | "saldo_inicial";
 
+export type ChargeBatchStatus = "activo" | "eliminado";
+
 export type ChargeBatch = {
   id: string;
   created_at: string;
@@ -70,6 +72,14 @@ export type ChargeBatch = {
   posted_date: string;
   due_date: string;
   description: string | null;
+  // Nuevos campos
+  status?: ChargeBatchStatus;
+  total_amount?: number;
+  charges_count?: number;
+  deleted_at?: string | null;
+  deleted_by?: string | null;
+  // Relaciones opcionales
+  expense_item?: { name: string } | null;
 };
 
 export type UnitChargePreview = {

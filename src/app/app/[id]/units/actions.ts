@@ -755,3 +755,10 @@ export async function getUnitChargesSummary(condominiumId: string, unitId: strin
 
   return { totalGenerado, saldoPendiente, totalCargos: data.length };
 }
+
+// ============================================================================
+// CARTERA / ESTADO DE CUENTA
+// ============================================================================
+// NOTA: La función getCarteraData y sus tipos se importan directamente desde
+// @/lib/cartera/getCarteraData en la página de cartera (no se puede re-exportar
+// desde un archivo "use server")

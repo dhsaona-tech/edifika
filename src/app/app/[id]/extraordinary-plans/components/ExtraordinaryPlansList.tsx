@@ -2,6 +2,7 @@
 
 import { useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
+import Link from "next/link";
 import {
   Layers,
   Calendar,
@@ -11,6 +12,7 @@ import {
   XCircle,
   Play,
   MoreVertical,
+  Eye,
 } from "lucide-react";
 import { approveExtraordinaryPlan, cancelExtraordinaryPlan } from "../actions";
 import type { ExtraordinaryPlan } from "@/types/billing";
@@ -128,12 +130,12 @@ export default function ExtraordinaryPlansList({ condominiumId, plans }: Props) 
               return (
                 <tr key={plan.id} className="hover:bg-gray-50 transition-colors">
                   <td className="px-4 py-3">
-                    <div>
-                      <p className="font-medium text-gray-900">{plan.name}</p>
+                    <Link href={`/app/${condominiumId}/extraordinary-plans/${plan.id}`} className="block group">
+                      <p className="font-medium text-gray-900 group-hover:text-brand">{plan.name}</p>
                       <p className="text-xs text-gray-500">
                         {(plan.expense_item as any)?.name || "Sin rubro"}
                       </p>
-                    </div>
+                    </Link>
                   </td>
                   <td className="px-4 py-3">
                     <div className="flex items-center gap-1 text-gray-900">
@@ -182,6 +184,13 @@ export default function ExtraordinaryPlansList({ condominiumId, plans }: Props) 
 
                       {openMenu === plan.id && (
                         <div className="absolute right-0 mt-1 w-40 bg-white rounded-lg shadow-lg border border-gray-200 py-1 z-10">
+                          <Link
+                            href={`/app/${condominiumId}/extraordinary-plans/${plan.id}`}
+                            className="w-full px-4 py-2 text-left text-sm text-gray-700 hover:bg-gray-50 flex items-center gap-2"
+                          >
+                            <Eye size={14} />
+                            Ver Detalle
+                          </Link>
                           {plan.status === "borrador" && (
                             <>
                               <button
@@ -208,9 +217,6 @@ export default function ExtraordinaryPlansList({ condominiumId, plans }: Props) 
                               <XCircle size={14} />
                               Cancelar
                             </button>
-                          )}
-                          {(plan.status === "completado" || plan.status === "cancelado") && (
-                            <p className="px-4 py-2 text-sm text-gray-400">Sin acciones</p>
                           )}
                         </div>
                       )}

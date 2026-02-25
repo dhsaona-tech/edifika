@@ -4,6 +4,7 @@ import { createClient } from "@/lib/supabase/server";
 import { revalidatePath } from "next/cache";
 import { z } from "zod";
 import { BudgetMaster, DistributionMethod } from "@/types/budget";
+import { RubroSource } from "@/types/expense-items";
 
 const BudgetPayloadSchema = z.object({
   budgetId: z.string().uuid().optional(),
@@ -13,10 +14,15 @@ const BudgetPayloadSchema = z.object({
   distribution_method: z.enum(["por_aliquota", "igualitario", "manual_por_unidad"]),
   status: z.enum(["borrador", "aprobado", "inactivo"]),
   total_annual_amount: z.coerce.number().min(0).optional(),
+  // Fecha desde la que aplica el presupuesto (para versionamiento)
+  effective_from: z.string().optional(),
+  // Motivo del cambio (obligatorio si es modificación de uno existente en el mismo año)
+  change_reason: z.string().optional(),
   rubros: z
     .array(
       z.object({
-        expense_item_id: z.string().uuid(),
+        expense_item_id: z.string().uuid().optional(), // Puede ser nuevo
+        name: z.string().optional(), // Nombre del rubro si es nuevo
         annual_amount: z.coerce.number().min(0),
       })
     )
@@ -88,6 +94,28 @@ export async function getExpenseItemsPadre(condominiumId: string) {
   return data || [];
 }
 
+/**
+ * Obtiene rubros extraordinarios de gasto para usar en Proyectos
+ */
+export async function getExpenseItemsExtraordinarios(condominiumId: string) {
+  const supabase = await createClient();
+  const { data, error } = await supabase
+    .from("expense_items")
+    .select("id, name, description")
+    .eq("condominium_id", condominiumId)
+    .eq("category", "gasto")
+    .eq("classification", "extraordinario")
+    .eq("is_active", true)
+    .is("parent_id", null)
+    .order("name");
+
+  if (error) {
+    console.error("Error cargando rubros extraordinarios", error);
+    return [];
+  }
+  return data || [];
+}
+
 export async function getUnitsForDistribution(condominiumId: string) {
   const supabase = await createClient();
   const { data, error } = await supabase
@@ -105,7 +133,7 @@ export async function getUnitsForDistribution(condominiumId: string) {
 
 export async function createRubroPadre(
   condominiumId: string,
-  payload: { name: string; description?: string | null }
+  payload: { name: string; description?: string | null; budgetMasterId?: string }
 ) {
   const supabase = await createClient();
   const name = (payload.name || "").trim();
@@ -122,6 +150,8 @@ export async function createRubroPadre(
       allocation_method: "aliquot",
       parent_id: null,
       is_active: true,
+      source: "budget" as RubroSource,
+      source_budget_id: payload.budgetMasterId || null,
     })
     .select("id, name")
     .single();
@@ -132,6 +162,7 @@ export async function createRubroPadre(
   }
 
   revalidatePath(`/app/${condominiumId}/budget`);
+  revalidatePath(`/app/${condominiumId}/expense-items`);
   return { success: true, rubro: data };
 }
 
@@ -152,8 +183,10 @@ export async function saveBudget(condominiumId: string, payload: unknown) {
   if (data.budget_type === "detallado") {
     const acumulado = new Map<string, number>();
     (data.rubros || []).forEach((r) => {
-      const prev = acumulado.get(r.expense_item_id) || 0;
-      acumulado.set(r.expense_item_id, prev + Number(r.annual_amount || 0));
+      if (r.expense_item_id) {
+        const prev = acumulado.get(r.expense_item_id) || 0;
+        acumulado.set(r.expense_item_id, prev + Number(r.annual_amount || 0));
+      }
     });
     rubrosUnicos = Array.from(acumulado.entries()).map(([expense_item_id, annual_amount]) => ({
       expense_item_id,
@@ -173,8 +206,51 @@ export async function saveBudget(condominiumId: string, payload: unknown) {
 
   const supabase = await createClient();
 
-  // Crear o actualizar presupuesto maestro
-  const masterPayload = {
+  // ======================================================================
+  // INTENTO 1: Usar RPC atómica (si la migración 015 fue aplicada)
+  // ======================================================================
+  const rpcResult = await supabase.rpc("save_budget_atomic", {
+    p_condominium_id: condominiumId,
+    p_budget_id: data.budgetId || null,
+    p_name: data.name,
+    p_year: data.year,
+    p_budget_type: data.budget_type,
+    p_distribution_method: data.distribution_method,
+    p_status: data.status,
+    p_total_annual_amount: totalFromRubros,
+    p_effective_from: data.effective_from || null,
+    p_change_reason: data.change_reason || null,
+    p_rubros: rubrosUnicos,
+  });
+
+  if (!rpcResult.error) {
+    // RPC existe y funcionó
+    const result = rpcResult.data as { success: boolean; budget_id?: string; error?: string };
+    if (result?.success) {
+      revalidatePath(`/app/${condominiumId}/budget`);
+      if (result.budget_id) {
+        revalidatePath(`/app/${condominiumId}/budget/${result.budget_id}`);
+      }
+      return { success: true, budgetId: result.budget_id };
+    }
+    return { error: result?.error || "Error al guardar el presupuesto." };
+  }
+
+  // Si el error es que la función no existe, caer al flujo multi-step
+  const rpcErrorMsg = rpcResult.error.message || "";
+  const rpcNotFound =
+    rpcResult.error.code === "42883" || rpcErrorMsg.includes("does not exist");
+
+  if (!rpcNotFound) {
+    // Error real de la RPC (no es "function not found")
+    console.error("Error en RPC save_budget_atomic", rpcResult.error);
+    return { error: rpcResult.error.message || "Error al guardar el presupuesto." };
+  }
+
+  // ======================================================================
+  // FALLBACK: Flujo multi-step (sin RPC)
+  // ======================================================================
+  const masterPayload: Record<string, unknown> = {
     condominium_id: condominiumId,
     name: data.name,
     year: data.year,
@@ -183,6 +259,16 @@ export async function saveBudget(condominiumId: string, payload: unknown) {
     status: data.status,
     distribution_method: data.distribution_method as DistributionMethod,
   };
+
+  if (data.effective_from) {
+    masterPayload.effective_from = data.effective_from;
+  }
+  if (data.change_reason) {
+    masterPayload.change_reason = data.change_reason;
+  }
+  if (data.budgetId) {
+    masterPayload.modified_at = new Date().toISOString();
+  }
 
   let budgetId = data.budgetId;
 
@@ -227,9 +313,17 @@ export async function saveBudget(condominiumId: string, payload: unknown) {
     budgetId = inserted.id;
   }
 
-  // Manejo de rubros y budgets (solo para detallado)
   if (data.budget_type === "detallado" && budgetId) {
-    await supabase.from("budgets").delete().eq("budgets_master_id", budgetId);
+    const { error: deleteError } = await supabase
+      .from("budgets")
+      .delete()
+      .eq("budgets_master_id", budgetId)
+      .eq("condominium_id", condominiumId);
+
+    if (deleteError) {
+      console.error("Error borrando líneas previas del presupuesto", deleteError);
+      return { error: "No se pudieron actualizar las líneas del presupuesto." };
+    }
 
     const meses = Array.from({ length: 12 }, (_, idx) => idx + 1);
     const budgetsRows = rubrosUnicos.flatMap((rubro) => {
@@ -244,16 +338,6 @@ export async function saveBudget(condominiumId: string, payload: unknown) {
     });
 
     if (budgetsRows.length > 0) {
-      // Borrar cualquier línea de ese condominio y año para evitar duplicados en la clave única
-      const startPeriod = `${data.year}-01-01`;
-      const endPeriod = `${data.year}-12-31`;
-      await supabase
-        .from("budgets")
-        .delete()
-        .eq("condominium_id", condominiumId)
-        .gte("period", startPeriod)
-        .lte("period", endPeriod);
-
       const { error } = await supabase.from("budgets").insert(budgetsRows);
       if (error) {
         if (error.code === "42501") {
@@ -262,15 +346,24 @@ export async function saveBudget(condominiumId: string, payload: unknown) {
               "Política RLS bloqueó la inserción en budgets. Asegura que las políticas permitan delete/insert para condominium_id actual.",
           };
         }
+        if (error.code === "23505") {
+          return {
+            error:
+              "Ya existe otro presupuesto con líneas para el mismo año y rubros. Desactiva o elimina el presupuesto anterior antes de guardar este.",
+          };
+        }
         console.error("Error guardando rubros del presupuesto", error);
         return { error: "No se pudieron guardar las lineas del presupuesto." };
       }
     }
   }
 
-  // Si cambió a global, limpiar budgets para evitar residuos
   if (data.budget_type === "global" && budgetId) {
-    await supabase.from("budgets").delete().eq("budgets_master_id", budgetId);
+    await supabase
+      .from("budgets")
+      .delete()
+      .eq("budgets_master_id", budgetId)
+      .eq("condominium_id", condominiumId);
   }
 
   revalidatePath(`/app/${condominiumId}/budget`);
@@ -280,8 +373,96 @@ export async function saveBudget(condominiumId: string, payload: unknown) {
   return { success: true, budgetId };
 }
 
+/**
+ * Sincroniza los rubros ordinarios con el presupuesto:
+ * - Desactiva rubros que ya no están en el nuevo presupuesto (solo los creados por budget)
+ * - Reactiva y vincula rubros que están en el nuevo presupuesto
+ *
+ * IMPORTANTE: Usa is_active (no is_archived) para mantener consistencia con todo el sistema
+ */
+async function sincronizarRubrosConPresupuesto(
+  supabase: Awaited<ReturnType<typeof createClient>>,
+  condominiumId: string,
+  budgetId: string,
+  budgetType: string
+) {
+  if (budgetType !== "detallado") return;
+
+  // Obtener rubros del nuevo presupuesto
+  const { data: budgetLines } = await supabase
+    .from("budgets")
+    .select("expense_item_id")
+    .eq("budgets_master_id", budgetId);
+
+  const rubrosEnPresupuesto = new Set(
+    (budgetLines || []).map((l) => l.expense_item_id).filter(Boolean)
+  );
+
+  // Obtener rubros ordinarios actuales (activos y vinculados a algún presupuesto)
+  const { data: rubrosActuales } = await supabase
+    .from("expense_items")
+    .select("id, source_budget_id, is_active")
+    .eq("condominium_id", condominiumId)
+    .eq("category", "gasto")
+    .eq("classification", "ordinario")
+    .is("parent_id", null);
+
+  // Desactivar rubros que vinieron de budget pero ya no están en el nuevo presupuesto
+  const rubrosParaDesactivar = (rubrosActuales || []).filter(
+    (r) => r.source_budget_id && r.is_active && !rubrosEnPresupuesto.has(r.id)
+  );
+
+  if (rubrosParaDesactivar.length > 0) {
+    await supabase
+      .from("expense_items")
+      .update({ is_active: false })
+      .in(
+        "id",
+        rubrosParaDesactivar.map((r) => r.id)
+      )
+      .eq("condominium_id", condominiumId);
+  }
+
+  // Activar y vincular rubros que están en el nuevo presupuesto
+  if (rubrosEnPresupuesto.size > 0) {
+    await supabase
+      .from("expense_items")
+      .update({
+        source_budget_id: budgetId,
+        is_active: true,
+      })
+      .in("id", Array.from(rubrosEnPresupuesto))
+      .eq("condominium_id", condominiumId);
+  }
+}
+
 export async function setActiveBudget(condominiumId: string, budgetId: string) {
   const supabase = await createClient();
+
+  // Obtener info del presupuesto
+  const { data: budget } = await supabase
+    .from("budgets_master")
+    .select("budget_type")
+    .eq("id", budgetId)
+    .single();
+
+  // Desactivar presupuesto anterior si hay uno
+  const { data: condo } = await supabase
+    .from("condominiums")
+    .select("active_budget_master_id")
+    .eq("id", condominiumId)
+    .single();
+
+  if (condo?.active_budget_master_id && condo.active_budget_master_id !== budgetId) {
+    // Marcar el anterior como inactivo con fecha de fin
+    await supabase
+      .from("budgets_master")
+      .update({
+        status: "inactivo",
+        effective_to: new Date().toISOString().split("T")[0],
+      })
+      .eq("id", condo.active_budget_master_id);
+  }
 
   const { error: condoError } = await supabase
     .from("condominiums")
@@ -304,8 +485,12 @@ export async function setActiveBudget(condominiumId: string, budgetId: string) {
     return { error: "Presupuesto activo, pero no se pudo actualizar el estado a aprobado." };
   }
 
+  // Sincronizar rubros con el nuevo presupuesto
+  await sincronizarRubrosConPresupuesto(supabase, condominiumId, budgetId, budget?.budget_type || "");
+
   revalidatePath(`/app/${condominiumId}/budget`);
   revalidatePath(`/app/${condominiumId}/budget/${budgetId}`);
+  revalidatePath(`/app/${condominiumId}/expense-items`);
   return { success: true };
 }
 
@@ -359,18 +544,14 @@ export async function deleteBudget(condominiumId: string, budgetId: string) {
       .eq("id", condominiumId);
   }
 
-  // Soft-delete: cambiar estado a "eliminado" en lugar de borrar
-  // Primero marcar las líneas como inactivas
-  await supabase
-    .from("budgets")
-    .delete()
-    .eq("budgets_master_id", budgetId)
-    .eq("condominium_id", condominiumId);
-
-  // Marcar el presupuesto maestro como eliminado
+  // SOFT DELETE: cambiar a inactivo en lugar de eliminar físicamente
+  // Las líneas de budgets se mantienen para historial
   const { error } = await supabase
     .from("budgets_master")
-    .update({ status: "eliminado" })
+    .update({
+      status: "inactivo",
+      effective_to: new Date().toISOString().split("T")[0],
+    })
     .eq("id", budgetId)
     .eq("condominium_id", condominiumId);
 
@@ -399,8 +580,7 @@ export async function getBudgetDetail(condominiumId: string, budgetId: string) {
   const { data: lines, error } = await supabase
     .from("budgets")
     .select("amount, expense_item_id, expense_items(name)")
-    .eq("budgets_master_id", budgetId)
-    .eq("condominium_id", condominiumId);
+    .eq("budgets_master_id", budgetId);
 
   if (error) {
     console.error("Error cargando lineas de presupuesto", error);

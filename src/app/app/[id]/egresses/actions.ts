@@ -2,6 +2,7 @@
 
 import { revalidatePath } from "next/cache";
 import { createClient } from "@/lib/supabase/server";
+import { logAudit } from "@/lib/audit/logAudit";
 
 // Sanitizar búsquedas para prevenir SQL injection en PostgREST
 function sanitizeSearch(input: string | undefined | null): string {
@@ -96,6 +97,13 @@ export async function listEgresses(condominiumId: string, filters?: EgressFilter
   });
 }
 
+/**
+ * Listar egresos anulados
+ */
+export async function listEgressesAnulados(condominiumId: string) {
+  return listEgresses(condominiumId, { status: "anulado" });
+}
+
 export async function getEgressDetail(condominiumId: string, egressId: string) {
   const supabase = await createClient();
   const { data: egress, error } = await supabase
@@ -147,7 +155,43 @@ export async function getEgressDetail(condominiumId: string, egressId: string) {
   };
 }
 
-export async function cancelEgress(condominiumId: string, egressId: string, reason: string) {
+// Verificar si un egreso tiene un cheque asociado (del control de chequera)
+export async function getEgressCheckInfo(condominiumId: string, egressId: string) {
+  const supabase = await createClient();
+
+  // Buscar si hay un cheque vinculado a este egreso
+  const { data: check, error } = await supabase
+    .from("checks")
+    .select("id, check_number, status, financial_account_id")
+    .eq("egress_id", egressId)
+    .maybeSingle();
+
+  if (error) {
+    console.error("Error verificando cheque del egreso", error);
+    return { hasCheck: false, check: null };
+  }
+
+  return {
+    hasCheck: !!check,
+    check: check
+      ? {
+          id: check.id,
+          checkNumber: check.check_number,
+          status: check.status,
+        }
+      : null,
+  };
+}
+
+// Tipo de acción para el cheque al anular
+export type CheckCancelAction = "void" | "release" | "none";
+
+export async function cancelEgress(
+  condominiumId: string,
+  egressId: string,
+  reason: string,
+  checkAction: CheckCancelAction = "none"
+) {
   const supabase = await createClient();
 
   // Verificar si el egreso está conciliado
@@ -163,6 +207,40 @@ export async function cancelEgress(condominiumId: string, egressId: string, reas
   if (isReconciled) {
     return { error: "No se puede anular un egreso que está conciliado. Debes borrar la conciliación primero." };
   }
+
+  // ========== MANEJO DE CHEQUE ==========
+  // Buscar si hay un cheque vinculado
+  const { data: linkedCheck } = await supabase
+    .from("checks")
+    .select("id, check_number, status")
+    .eq("egress_id", egressId)
+    .maybeSingle();
+
+  if (linkedCheck && checkAction !== "none") {
+    if (checkAction === "void") {
+      // Anular el cheque físicamente (nunca vuelve a la lista)
+      await supabase
+        .from("checks")
+        .update({
+          status: "anulado",
+          notes: `Anulado con egreso. Motivo: ${reason || "Sin especificar"}`,
+          // Mantener egress_id para trazabilidad
+        })
+        .eq("id", linkedCheck.id);
+    } else if (checkAction === "release") {
+      // Liberar el cheque (vuelve a disponible)
+      await supabase
+        .from("checks")
+        .update({
+          status: "disponible",
+          egress_id: null,
+          issue_date: null,
+          notes: `Liberado por anulación de egreso`,
+        })
+        .eq("id", linkedCheck.id);
+    }
+  }
+  // ========== FIN MANEJO DE CHEQUE ==========
 
   // ========== REVERSIÓN AUTOMÁTICA DE OPs ==========
   // Obtener todas las allocations de este egreso para revertir los pagos
@@ -240,8 +318,28 @@ export async function cancelEgress(condominiumId: string, egressId: string, reas
     return { error: "No se pudo anular el egreso." };
   }
 
+  // Audit log: registrar anulación de egreso
+  logAudit({
+    condominiumId,
+    tableName: "egresses",
+    recordId: egressId,
+    action: "ANULACION",
+    newValues: {
+      reason: motivo,
+      ops_revertidas: allocations?.length || 0,
+      check_action: linkedCheck ? checkAction : "none",
+    },
+    notes: `Anulación de egreso: ${motivo}`,
+  });
+
   revalidatePath(`/app/${condominiumId}/egresses`);
   revalidatePath(`/app/${condominiumId}/egresses/${egressId}`);
   revalidatePath(`/app/${condominiumId}/payables`);
-  return { success: true, opsRevertidas: allocations?.length || 0 };
+  revalidatePath(`/app/${condominiumId}/financial-accounts`);
+
+  return {
+    success: true,
+    opsRevertidas: allocations?.length || 0,
+    checkAction: linkedCheck ? checkAction : "none",
+  };
 }

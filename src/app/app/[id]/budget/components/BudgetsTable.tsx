@@ -4,8 +4,8 @@ import Link from "next/link";
 import { useTransition, useState } from "react";
 import { BudgetMaster } from "@/types/budget";
 import { formatCurrency } from "@/lib/utils";
-import { setActiveBudget } from "../actions";
-import { BadgeCheck, CalendarRange, Loader2, ShieldCheck, Pencil } from "lucide-react";
+import { setActiveBudget, deactivateBudget, deleteBudget } from "../actions";
+import { BadgeCheck, CalendarRange, Loader2, ShieldCheck, Pencil, XCircle, Trash2 } from "lucide-react";
 
 type Props = {
   condominiumId: string;
@@ -38,6 +38,24 @@ export default function BudgetsTable({ budgets, condominiumId, activeBudgetId }:
     setMessage(null);
     startTransition(async () => {
       const result = await setActiveBudget(condominiumId, budgetId);
+      if (result?.error) setMessage(result.error);
+    });
+  };
+
+  const handleDeactivate = (budgetId: string) => {
+    if (!confirm("¿Desactivar este presupuesto? Los rubros ordinarios ya no estarán bloqueados.")) return;
+    setMessage(null);
+    startTransition(async () => {
+      const result = await deactivateBudget(condominiumId, budgetId);
+      if (result?.error) setMessage(result.error);
+    });
+  };
+
+  const handleDelete = (budgetId: string, budgetName: string) => {
+    if (!confirm(`¿Eliminar el presupuesto "${budgetName}"? Esta acción lo marcará como inactivo permanentemente.`)) return;
+    setMessage(null);
+    startTransition(async () => {
+      const result = await deleteBudget(condominiumId, budgetId);
       if (result?.error) setMessage(result.error);
     });
   };
@@ -87,7 +105,7 @@ export default function BudgetsTable({ budgets, condominiumId, activeBudgetId }:
                 </td>
                 <td className="px-4 py-3 text-right">
                   <div className="flex items-center justify-end gap-2">
-                    {!isActive && (
+                    {!isActive && b.status !== "inactivo" && (
                       <button
                         onClick={() => handleSetActive(b.id)}
                         disabled={isPending}
@@ -95,6 +113,16 @@ export default function BudgetsTable({ budgets, condominiumId, activeBudgetId }:
                       >
                         {isPending ? <Loader2 size={14} className="animate-spin" /> : <BadgeCheck size={14} />}
                         Activar
+                      </button>
+                    )}
+                    {isActive && (
+                      <button
+                        onClick={() => handleDeactivate(b.id)}
+                        disabled={isPending}
+                        className="inline-flex items-center gap-1 text-xs font-semibold text-amber-700 border border-amber-200 px-3 py-1 rounded-md hover:bg-amber-50 disabled:opacity-60"
+                      >
+                        {isPending ? <Loader2 size={14} className="animate-spin" /> : <XCircle size={14} />}
+                        Desactivar
                       </button>
                     )}
                     <Link
@@ -111,6 +139,16 @@ export default function BudgetsTable({ budgets, condominiumId, activeBudgetId }:
                       <Pencil size={14} />
                       Editar
                     </Link>
+                    {!isActive && (
+                      <button
+                        onClick={() => handleDelete(b.id, b.name)}
+                        disabled={isPending}
+                        className="inline-flex items-center gap-1 text-xs font-semibold text-red-600 border border-red-200 px-3 py-1 rounded-md hover:bg-red-50 disabled:opacity-60"
+                      >
+                        {isPending ? <Loader2 size={14} className="animate-spin" /> : <Trash2 size={14} />}
+                        Eliminar
+                      </button>
+                    )}
                   </div>
                 </td>
               </tr>

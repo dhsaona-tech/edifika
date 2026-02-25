@@ -37,38 +37,44 @@ export default async function ResidentsPage({ params, searchParams }: PageProps)
 
   return (
     <div className="space-y-3">
-      
-      {/* --- HEADER COMPACTO (IGUAL A UNITS) --- */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-gray-200 pb-3">
+      {/* Header compacto - como Unidades */}
+      <div className="flex items-center justify-between">
         <div>
-          <div className="flex items-center gap-2">
-            <h1 className="text-lg font-bold text-gray-800 tracking-tight">Directorio de Residentes</h1>
-            <span className="bg-gray-100 text-gray-600 px-1.5 py-0.5 rounded text-[10px] font-medium border border-gray-200">
-                {residents.length}
-            </span>
-          </div>
+          <h1 className="text-lg font-bold text-gray-900">Directorio</h1>
+          <p className="text-[11px] text-gray-500">Residentes, propietarios e inquilinos del condominio</p>
         </div>
-        
-        {/* El botón de Nuevo Residente ya viene estilizado dentro del componente */}
         <CreateResidentModal condominiumId={condominiumId} availableUnits={availableUnits} />
       </div>
 
-      {/* --- TOOLBAR UNIFICADA --- */}
-      <ResidentsToolbar condominiumId={condominiumId} />
+      {/* Filtros compactos */}
+      <div className="bg-white rounded-lg border border-gray-200 p-2.5 shadow-sm">
+        <ResidentsToolbar condominiumId={condominiumId} />
+      </div>
 
-      {/* --- TABLA --- */}
-      <div className="bg-white rounded-lg shadow border border-secondary-dark overflow-hidden">
+      {/* Tabla compacta */}
+      <div className="bg-white rounded-lg border border-gray-200 overflow-hidden shadow-sm">
         {residents.length === 0 ? (
-          <div className="bg-white p-8 flex flex-col items-center justify-center text-center">
-            <div className="w-10 h-10 bg-slate-50 rounded-full flex items-center justify-center mb-2 text-gray-300">
-              <Users size={20} />
+          <div className="p-6 flex flex-col items-center justify-center text-center">
+            <div className="w-9 h-9 bg-brand/10 rounded-lg flex items-center justify-center mb-1.5">
+              <Users size={18} className="text-brand" strokeWidth={2} />
             </div>
-            <p className="text-xs text-gray-500">
-              {query ? "No se encontraron resultados." : "No hay residentes registrados."}
+            <p className="text-[11px] font-semibold text-gray-900 mb-0.5">
+              {query ? "No se encontraron resultados" : "No hay residentes"}
+            </p>
+            <p className="text-[10px] text-gray-500">
+              {query ? "Prueba otros filtros o búsqueda." : "Registra el primer residente."}
             </p>
           </div>
         ) : (
-          <ResidentsTable residents={residents} condominiumId={condominiumId} />
+          <>
+            <ResidentsTable residents={residents} condominiumId={condominiumId} />
+            <div className="bg-gray-50 px-3 py-1.5 border-t border-gray-200">
+              <p className="text-[10px] text-gray-500">
+                <span className="font-semibold text-gray-900">{residents.length}</span>{" "}
+                {residents.length === 1 ? "residente" : "residentes"}
+              </p>
+            </div>
+          </>
         )}
       </div>
     </div>

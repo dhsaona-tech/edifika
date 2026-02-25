@@ -6,11 +6,14 @@ import { createClient } from "@/lib/supabase/client";
 import DatePicker from "@/components/ui/DatePicker";
 import { paymentMethodOptions } from "@/lib/payments/schemas";
 import { formatCurrency } from "@/lib/utils";
+import { Plus, X, Users, Building2 } from "lucide-react";
 
 type Option = { value: string; label: string };
 
 type ChargeRow = {
   id: string;
+  unit_id: string;
+  unit_identifier: string;
   period: string | null;
   description?: string | null;
   due_date?: string | null;
@@ -34,6 +37,11 @@ type Contact = {
   email?: string | null;
   phone?: string | null;
   address?: string | null;
+};
+
+type SelectedUnit = {
+  id: string;
+  identifier: string;
 };
 
 type Props = {
@@ -60,7 +68,11 @@ export default function RegisterPaymentPage({ condominiumId, units, accounts }: 
   const [isPending, startTransition] = useTransition();
   const [message, setMessage] = useState<{ type: "error" | "success"; text: string } | null>(null);
 
-  const [unitId, setUnitId] = useState<string>("");
+  // Unidades seleccionadas (multi-unidad)
+  const [selectedUnits, setSelectedUnits] = useState<SelectedUnit[]>([]);
+  const [unitToAdd, setUnitToAdd] = useState<string>("");
+  const [ownerOtherUnits, setOwnerOtherUnits] = useState<SelectedUnit[]>([]);
+
   const [accountId, setAccountId] = useState<string>("");
   const [paymentMethod, setPaymentMethod] = useState<string>("");
   const [paymentDate, setPaymentDate] = useState<string>("");
@@ -76,12 +88,10 @@ export default function RegisterPaymentPage({ condominiumId, units, accounts }: 
   const [contact, setContact] = useState<Contact | null>(null);
   const [nextFolio, setNextFolio] = useState<string>("--");
 
-  // Créditos/Saldos a favor de la unidad
-  const [unitCredits, setUnitCredits] = useState<UnitCreditInfo[]>([]);
+  // Créditos/Saldos a favor
   const [totalCreditAvailable, setTotalCreditAvailable] = useState<number>(0);
-  const [loadingCredits, setLoadingCredits] = useState(false);
 
-  // Subtotal solicitado (puede incluir sobrepago, quedará como crédito).
+  // Subtotales
   const requestedSubtotal = useMemo(
     () =>
       charges
@@ -89,7 +99,6 @@ export default function RegisterPaymentPage({ condominiumId, units, accounts }: 
         .reduce((acc, c) => acc + Number(c.amountToApply || 0), 0),
     [charges]
   );
-  // Subtotal aplicable (limitado por saldo de cada cargo).
   const appliedSubtotal = useMemo(
     () =>
       charges
@@ -104,22 +113,29 @@ export default function RegisterPaymentPage({ condominiumId, units, accounts }: 
     fetchNextFolio();
   }, []);
 
-  // Cargar cargos, contacto y créditos cuando cambia la unidad
+  // Cargar cargos cuando cambian las unidades seleccionadas
   useEffect(() => {
-    if (unitId) {
-      loadCharges(unitId);
-      loadContact(unitId);
-      loadUnitCredits(unitId);
+    if (selectedUnits.length > 0) {
+      loadChargesMultiUnit(selectedUnits.map((u) => u.id));
     } else {
       setCharges([]);
+    }
+  }, [selectedUnits]);
+
+  // Cargar contacto de la primera unidad
+  useEffect(() => {
+    if (selectedUnits.length > 0) {
+      loadContact(selectedUnits[0].id);
+      loadOwnerOtherUnits(selectedUnits[0].id);
+      loadUnitCredits(selectedUnits[0].id);
+    } else {
       setContact(null);
-      setUnitCredits([]);
+      setOwnerOtherUnits([]);
       setTotalCreditAvailable(0);
     }
-  }, [unitId]);
+  }, [selectedUnits.length > 0 ? selectedUnits[0].id : null]);
 
   const fetchNextFolio = async () => {
-    // Primero intentar desde folio_counters
     const { data, error } = await supabase
       .from("folio_counters")
       .select("current_folio_rec")
@@ -132,7 +148,6 @@ export default function RegisterPaymentPage({ condominiumId, units, accounts }: 
       return;
     }
 
-    // Fallback: obtener el máximo folio de payments directamente
     const { data: maxPayment } = await supabase
       .from("payments")
       .select("folio_rec")
@@ -146,42 +161,46 @@ export default function RegisterPaymentPage({ condominiumId, units, accounts }: 
     setNextFolio(next.toString().padStart(4, "0"));
   };
 
-  const loadCharges = async (uId: string) => {
+  const loadChargesMultiUnit = async (unitIds: string[]) => {
     setLoadingCharges(true);
     const { data, error } = await supabase
       .from("charges")
-      .select(
-        `
+      .select(`
         id,
+        unit_id,
         period,
         description,
         due_date,
         balance,
-        expense_item:expense_items(name)
-      `
-      )
-      .eq("unit_id", uId)
+        expense_item:expense_items(name),
+        unit:units(identifier, full_identifier)
+      `)
       .eq("condominium_id", condominiumId)
+      .in("unit_id", unitIds)
       .eq("status", "pendiente")
       .order("due_date", { ascending: true });
+
     if (error) {
       setMessage({ type: "error", text: "No se pudieron cargar los cargos." });
       setLoadingCharges(false);
       return;
     }
-    const mapped =
-      (data || [])
-        .sort((a: any, b: any) => (a.due_date || "").localeCompare(b.due_date || ""))
-        .map((c: any) => ({
-          id: c.id,
-          period: c.period,
-          description: c.description,
-          due_date: c.due_date,
-          balance: Number(c.balance || 0),
-          expense_item: c.expense_item,
-          include: true,
-          amountToApply: Number(c.balance || 0),
-        })) || [];
+
+    const mapped = (data || []).map((c: any) => {
+      const unit = Array.isArray(c.unit) ? c.unit[0] : c.unit;
+      return {
+        id: c.id,
+        unit_id: c.unit_id,
+        unit_identifier: unit?.full_identifier || unit?.identifier || "—",
+        period: c.period,
+        description: c.description,
+        due_date: c.due_date,
+        balance: Number(c.balance || 0),
+        expense_item: Array.isArray(c.expense_item) ? c.expense_item[0] : c.expense_item,
+        include: true,
+        amountToApply: Number(c.balance || 0),
+      };
+    });
     setCharges(mapped);
     setLoadingCharges(false);
   };
@@ -189,11 +208,7 @@ export default function RegisterPaymentPage({ condominiumId, units, accounts }: 
   const loadContact = async (uId: string) => {
     const { data } = await supabase
       .from("unit_contacts")
-      .select(
-        `
-        unit_id,
-        is_primary_contact,
-        end_date,
+      .select(`
         profiles(
           full_name,
           national_id,
@@ -201,12 +216,12 @@ export default function RegisterPaymentPage({ condominiumId, units, accounts }: 
           phone,
           address
         )
-      `
-      )
+      `)
       .eq("unit_id", uId)
       .eq("is_primary_contact", true)
       .is("end_date", null)
       .maybeSingle();
+
     if (data?.profiles) {
       const profile = Array.isArray(data.profiles) ? data.profiles[0] : data.profiles;
       if (profile) {
@@ -225,10 +240,61 @@ export default function RegisterPaymentPage({ condominiumId, units, accounts }: 
     }
   };
 
+  const loadOwnerOtherUnits = async (unitId: string) => {
+    // Obtener el propietario de esta unidad
+    const { data: contact } = await supabase
+      .from("unit_contacts")
+      .select("profile_id")
+      .eq("unit_id", unitId)
+      .eq("is_primary_contact", true)
+      .eq("relationship_type", "OWNER")
+      .is("end_date", null)
+      .maybeSingle();
+
+    if (!contact?.profile_id) {
+      setOwnerOtherUnits([]);
+      return;
+    }
+
+    // Buscar otras unidades del mismo propietario
+    const { data: otherContacts } = await supabase
+      .from("unit_contacts")
+      .select(`
+        unit_id,
+        unit:units!inner(
+          id,
+          identifier,
+          full_identifier,
+          condominium_id,
+          status
+        )
+      `)
+      .eq("profile_id", contact.profile_id)
+      .eq("relationship_type", "OWNER")
+      .eq("is_primary_contact", true)
+      .is("end_date", null)
+      .neq("unit_id", unitId);
+
+    const others = (otherContacts || [])
+      .filter((uc: any) => {
+        const unit = Array.isArray(uc.unit) ? uc.unit[0] : uc.unit;
+        return unit?.condominium_id === condominiumId && unit?.status === "activa";
+      })
+      .map((uc: any) => {
+        const unit = Array.isArray(uc.unit) ? uc.unit[0] : uc.unit;
+        return {
+          id: unit.id,
+          identifier: unit.full_identifier || unit.identifier,
+        };
+      })
+      // Filtrar las que ya están seleccionadas
+      .filter((u: SelectedUnit) => !selectedUnits.some((su) => su.id === u.id));
+
+    setOwnerOtherUnits(others);
+  };
+
   const loadUnitCredits = async (uId: string) => {
-    setLoadingCredits(true);
     try {
-      // Cargar créditos activos de la unidad
       const { data, error } = await supabase
         .from("unit_credits")
         .select("id, amount, remaining_amount, status, created_at")
@@ -238,27 +304,39 @@ export default function RegisterPaymentPage({ condominiumId, units, accounts }: 
         .order("created_at", { ascending: true });
 
       if (error) {
-        // Si la tabla no existe, simplemente ignoramos (no es un error crítico)
-        // El código PGRST116 o similar indica que la tabla no existe
-        if (error.code === "42P01" || error.message?.includes("does not exist")) {
-          // Tabla no existe, silenciosamente ignorar
-        } else {
-          console.warn("Créditos no disponibles:", error.message || error.code);
-        }
-        setUnitCredits([]);
         setTotalCreditAvailable(0);
       } else {
-        const credits = data || [];
-        setUnitCredits(credits);
-        const total = credits.reduce((sum, c) => sum + Number(c.remaining_amount || 0), 0);
+        const total = (data || []).reduce((sum, c) => sum + Number(c.remaining_amount || 0), 0);
         setTotalCreditAvailable(total);
       }
-    } catch (err) {
-      // Silenciosamente ignorar errores - la funcionalidad de créditos es opcional
-      setUnitCredits([]);
+    } catch {
       setTotalCreditAvailable(0);
     }
-    setLoadingCredits(false);
+  };
+
+  const addUnit = (unitId: string) => {
+    if (!unitId) return;
+    const unitOption = units.find((u) => u.value === unitId);
+    if (!unitOption) return;
+    if (selectedUnits.some((u) => u.id === unitId)) return;
+
+    setSelectedUnits((prev) => [
+      ...prev,
+      { id: unitId, identifier: unitOption.label },
+    ]);
+    setUnitToAdd("");
+  };
+
+  const addOwnerUnit = (unit: SelectedUnit) => {
+    if (selectedUnits.some((u) => u.id === unit.id)) return;
+    setSelectedUnits((prev) => [...prev, unit]);
+    setOwnerOtherUnits((prev) => prev.filter((u) => u.id !== unit.id));
+  };
+
+  const removeUnit = (unitId: string) => {
+    setSelectedUnits((prev) => prev.filter((u) => u.id !== unitId));
+    // Remover cargos de esa unidad
+    setCharges((prev) => prev.filter((c) => c.unit_id !== unitId));
   };
 
   const toggleCharge = (id: string) => {
@@ -277,26 +355,13 @@ export default function RegisterPaymentPage({ condominiumId, units, accounts }: 
     );
   };
 
-  const autoAsignar = () => {
-    const totalSeleccionado = charges.filter((c) => c.include).reduce((acc, c) => acc + c.balance, 0);
-    let restante = Number(totalSeleccionado) || 0;
-    setCharges((prev) =>
-      prev.map((c) => {
-        if (restante <= 0) return { ...c, include: false, amountToApply: 0 };
-        const aplicar = Math.min(restante, c.balance);
-        restante -= aplicar;
-        return { ...c, include: aplicar > 0, amountToApply: Number(aplicar.toFixed(2)) };
-      })
-    );
-  };
-
   const submit = () => {
     if (!accountId) {
       setMessage({ type: "error", text: "Selecciona la cuenta de ingreso." });
       return;
     }
-    if (!unitId) {
-      setMessage({ type: "error", text: "Selecciona la unidad." });
+    if (selectedUnits.length === 0) {
+      setMessage({ type: "error", text: "Selecciona al menos una unidad." });
       return;
     }
     if (!paymentMethod) {
@@ -315,6 +380,7 @@ export default function RegisterPaymentPage({ condominiumId, units, accounts }: 
       setMessage({ type: "error", text: "El número de referencia es obligatorio." });
       return;
     }
+
     const allocations = charges
       .filter((c) => c.include && Number(c.amountToApply || 0) > 0)
       .map((c) => {
@@ -326,10 +392,12 @@ export default function RegisterPaymentPage({ condominiumId, units, accounts }: 
         };
       })
       .filter((c) => c.amount_allocated > 0);
+
     if (allocations.length === 0) {
       setMessage({ type: "error", text: "Selecciona al menos un cargo a pagar." });
       return;
     }
+
     if (discountEnabled) {
       if (!discountDetail.trim()) {
         setMessage({ type: "error", text: "Agrega el detalle del descuento." });
@@ -343,13 +411,12 @@ export default function RegisterPaymentPage({ condominiumId, units, accounts }: 
         setMessage({ type: "error", text: "El descuento supera el subtotal seleccionado." });
         return;
       }
-    } else {
-      // forzar descuento cero si no está habilitado
-      setDiscount(0);
     }
 
     setMessage(null);
     startTransition(async () => {
+      // Usar la primera unidad como unidad principal del pago
+      // (las allocations ya tienen los charge_id que apuntan a sus respectivas unidades)
       const payload = {
         condominiumId,
         general: {
@@ -359,10 +426,10 @@ export default function RegisterPaymentPage({ condominiumId, units, accounts }: 
           total_amount: totalToCharge,
           payment_method: paymentMethod,
           reference_number: reference,
-          notes,
+          notes: notes + (selectedUnits.length > 1 ? ` [Multi-unidad: ${selectedUnits.map(u => u.identifier).join(", ")}]` : ""),
         },
         apply: {
-          unit_id: unitId,
+          unit_id: selectedUnits[0].id,
           allocations,
           allow_unassigned: true,
         },
@@ -385,19 +452,72 @@ export default function RegisterPaymentPage({ condominiumId, units, accounts }: 
         return;
       }
 
-      setMessage({ type: "success", text: "Pago registrado." });
+      const registeredPaymentId = json.paymentId;
+      setMessage({
+        type: "success",
+        text: "Pago registrado exitosamente. Generando comprobante y enviando por correo...",
+      });
+
+      // Verificar estado del email de forma async (feedback al usuario)
+      if (registeredPaymentId) {
+        (async () => {
+          try {
+            // Esperar un momento para que el fire-and-forget del backend procese
+            await new Promise((r) => setTimeout(r, 3000));
+
+            const emailRes = await fetch(
+              `/api/payments/${registeredPaymentId}/send-receipt`,
+              {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ condominiumId }),
+              }
+            );
+
+            if (emailRes.ok) {
+              const emailResult = await emailRes.json();
+              if (emailResult.sent) {
+                setMessage({
+                  type: "success",
+                  text: `Pago registrado. Comprobante enviado a ${emailResult.recipientEmail}`,
+                });
+              } else if (emailResult.reason) {
+                setMessage({
+                  type: "success",
+                  text: `Pago registrado. ${emailResult.reason}`,
+                });
+              }
+            }
+          } catch {
+            // Silenciar: el pago ya se registró
+          }
+        })();
+      }
+
       setTimeout(() => {
         router.push(`/app/${condominiumId}/payments`);
-      }, 800);
+      }, 4000);
     });
   };
+
+  // Agrupar cargos por unidad para mostrar
+  const chargesByUnit = useMemo(() => {
+    const grouped: Record<string, ChargeRow[]> = {};
+    charges.forEach((c) => {
+      if (!grouped[c.unit_id]) {
+        grouped[c.unit_id] = [];
+      }
+      grouped[c.unit_id].push(c);
+    });
+    return grouped;
+  }, [charges]);
 
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-semibold text-slate-900">Registrar cobro</h1>
-          <p className="text-sm text-gray-600">Selecciona unidad, marca deudas y cobra en una sola pantalla.</p>
+          <p className="text-sm text-gray-600">Selecciona unidades, marca deudas y cobra en una sola pantalla.</p>
         </div>
         <button
           type="button"
@@ -410,7 +530,7 @@ export default function RegisterPaymentPage({ condominiumId, units, accounts }: 
       </div>
 
       {/* Banner de crédito disponible */}
-      {totalCreditAvailable > 0 && (
+      {totalCreditAvailable > 0 && selectedUnits.length > 0 && (
         <div className="bg-emerald-50 border border-emerald-200 rounded-lg p-4 shadow-sm">
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-3">
@@ -420,18 +540,14 @@ export default function RegisterPaymentPage({ condominiumId, units, accounts }: 
                 </svg>
               </div>
               <div>
-                <p className="text-sm font-semibold text-emerald-800">
-                  Esta unidad tiene saldo a favor
-                </p>
-                <p className="text-xs text-emerald-600">
-                  {unitCredits.length} crédito(s) disponible(s). Puedes aplicarlos desde el módulo de Créditos.
-                </p>
+                <p className="text-sm font-semibold text-emerald-800">Esta unidad tiene saldo a favor</p>
+                <p className="text-xs text-emerald-600">Puedes aplicarlo desde el módulo de Créditos.</p>
               </div>
             </div>
             <div className="text-right">
               <p className="text-lg font-bold text-emerald-700">{formatCurrency(totalCreditAvailable)}</p>
               <a
-                href={`/app/${condominiumId}/credits?unitId=${unitId}`}
+                href={`/app/${condominiumId}/credits?unitId=${selectedUnits[0]?.id}`}
                 className="text-xs text-emerald-600 hover:text-emerald-800 underline"
               >
                 Ver créditos →
@@ -448,22 +564,88 @@ export default function RegisterPaymentPage({ condominiumId, units, accounts }: 
           </div>
         </div>
 
-        <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
-          <div>
-            <label className="text-xs font-semibold text-gray-700 block mb-1">Unidad *</label>
-            <select
-              className="w-full border border-gray-200 rounded-md px-3 py-2 text-sm"
-              value={unitId}
-              onChange={(e) => setUnitId(e.target.value)}
-            >
-              <option value="">Selecciona</option>
-              {units.map((u) => (
-                <option key={u.value} value={u.value}>
-                  {u.label}
-                </option>
-              ))}
-            </select>
+        {/* Selección de unidades (Multi-unidad) */}
+        <div className="space-y-3">
+          <div className="flex items-center gap-2">
+            <Building2 size={18} className="text-brand" />
+            <label className="text-sm font-semibold text-gray-800">Unidades a cobrar</label>
+            {selectedUnits.length > 1 && (
+              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-brand/10 text-brand text-xs font-medium">
+                <Users size={12} />
+                Multi-unidad
+              </span>
+            )}
           </div>
+
+          {/* Unidades seleccionadas */}
+          <div className="flex flex-wrap gap-2">
+            {selectedUnits.map((unit) => (
+              <div
+                key={unit.id}
+                className="inline-flex items-center gap-2 bg-brand/10 border border-brand/20 text-brand px-3 py-1.5 rounded-full text-sm font-medium"
+              >
+                <Building2 size={14} />
+                {unit.identifier}
+                <button
+                  onClick={() => removeUnit(unit.id)}
+                  className="hover:bg-brand/20 rounded-full p-0.5"
+                >
+                  <X size={14} />
+                </button>
+              </div>
+            ))}
+          </div>
+
+          {/* Seleccionar primera unidad (o agregar más del mismo dueño) */}
+          {selectedUnits.length === 0 ? (
+            <div className="flex items-center gap-2">
+              <select
+                className="flex-1 border border-gray-200 rounded-md px-3 py-2 text-sm"
+                value={unitToAdd}
+                onChange={(e) => setUnitToAdd(e.target.value)}
+              >
+                <option value="">Selecciona una unidad...</option>
+                {units.map((u) => (
+                  <option key={u.value} value={u.value}>
+                    {u.label}
+                  </option>
+                ))}
+              </select>
+              <button
+                onClick={() => addUnit(unitToAdd)}
+                disabled={!unitToAdd}
+                className="inline-flex items-center gap-1 bg-brand hover:bg-brand-dark text-white px-3 py-2 rounded-md text-sm font-medium disabled:opacity-50"
+              >
+                <Plus size={16} />
+                Seleccionar
+              </button>
+            </div>
+          ) : (
+            /* Otras unidades del mismo propietario */
+            ownerOtherUnits.length > 0 && (
+              <div className="bg-amber-50 border border-amber-200 rounded-lg p-3">
+                <p className="text-xs font-semibold text-amber-800 mb-2">
+                  <Users size={14} className="inline mr-1" />
+                  El propietario tiene más unidades en este conjunto:
+                </p>
+                <div className="flex flex-wrap gap-2">
+                  {ownerOtherUnits.map((unit) => (
+                    <button
+                      key={unit.id}
+                      onClick={() => addOwnerUnit(unit)}
+                      className="inline-flex items-center gap-1 bg-white border border-amber-300 text-amber-800 px-3 py-1 rounded-full text-xs font-medium hover:bg-amber-100"
+                    >
+                      <Plus size={12} />
+                      {unit.identifier}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )
+          )}
+        </div>
+
+        <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
           <div>
             <label className="text-xs font-semibold text-gray-700 block mb-1">Cuenta / Banco *</label>
             <select
@@ -524,15 +706,15 @@ export default function RegisterPaymentPage({ condominiumId, units, accounts }: 
               className="w-full text-sm text-gray-700"
               onChange={(e) => setAttachmentFile(e.target.files?.[0] || null)}
             />
-            <p className="text-[11px] text-gray-500 mt-1">Opcional: captura o foto del pago. Se guardará en el recibo.</p>
           </div>
         </div>
       </div>
 
+      {/* Tabla de cargos por unidad */}
       <div className="bg-white border border-gray-200 rounded-lg p-4 shadow-sm space-y-3">
         <div className="flex items-center justify-between">
           <div>
-            <h3 className="text-sm font-semibold text-gray-900">Cargos pendientes de la unidad</h3>
+            <h3 className="text-sm font-semibold text-gray-900">Cargos pendientes</h3>
             <p className="text-xs text-gray-600">Selecciona cuáles pagar y edita montos si es pago parcial.</p>
           </div>
         </div>
@@ -542,6 +724,7 @@ export default function RegisterPaymentPage({ condominiumId, units, accounts }: 
             <thead className="bg-gray-50 text-xs uppercase text-gray-500">
               <tr>
                 <th className="px-3 py-2 text-center">Pagar</th>
+                <th className="px-3 py-2 text-left">Unidad</th>
                 <th className="px-3 py-2 text-left">Rubro</th>
                 <th className="px-3 py-2 text-left">Detalle</th>
                 <th className="px-3 py-2 text-left">Periodo</th>
@@ -554,7 +737,7 @@ export default function RegisterPaymentPage({ condominiumId, units, accounts }: 
               {charges.map((c) => {
                 const detail = normalizeDetail(c.description, c.expense_item?.name);
                 return (
-                  <tr key={c.id}>
+                  <tr key={c.id} className={c.include ? "bg-brand/5" : ""}>
                     <td className="px-3 py-2 text-center">
                       <input
                         type="checkbox"
@@ -563,6 +746,7 @@ export default function RegisterPaymentPage({ condominiumId, units, accounts }: 
                         className="rounded text-brand focus:ring-brand"
                       />
                     </td>
+                    <td className="px-3 py-2 text-xs font-semibold text-gray-800">{c.unit_identifier}</td>
                     <td className="px-3 py-2 text-xs text-gray-700">{c.expense_item?.name || "--"}</td>
                     <td className="px-3 py-2 text-xs text-gray-600">{detail}</td>
                     <td className="px-3 py-2 text-xs text-gray-700">{c.period || "--"}</td>
@@ -578,7 +762,6 @@ export default function RegisterPaymentPage({ condominiumId, units, accounts }: 
                         className="w-28 border border-gray-200 rounded-md px-2 py-1 text-sm text-right"
                         value={c.amountToApply.toFixed(2)}
                         onChange={(e) => updateAmount(c.id, Number(parseFloat(e.target.value || "0").toFixed(2)))}
-                        onBlur={(e) => updateAmount(c.id, Number(parseFloat(e.target.value || "0").toFixed(2)))}
                         disabled={!c.include}
                       />
                     </td>
@@ -587,7 +770,7 @@ export default function RegisterPaymentPage({ condominiumId, units, accounts }: 
               })}
               {!charges.length && (
                 <tr>
-                  <td className="px-4 py-4 text-center text-sm text-gray-500" colSpan={7}>
+                  <td className="px-4 py-4 text-center text-sm text-gray-500" colSpan={8}>
                     {loadingCharges ? "Cargando cargos..." : "Selecciona una unidad para ver cargos pendientes."}
                   </td>
                 </tr>
@@ -595,16 +778,10 @@ export default function RegisterPaymentPage({ condominiumId, units, accounts }: 
             </tbody>
             <tfoot className="bg-gray-50">
               <tr>
-                <td className="px-3 py-2" />
-                <td className="px-3 py-2" />
-                <td className="px-3 py-2" />
-                <td className="px-3 py-2 text-right font-semibold text-gray-800" colSpan={2}>
-                  Subtotal seleccionado
-                </td>
+                <td className="px-3 py-2" colSpan={5} />
+                <td className="px-3 py-2 text-right font-semibold text-gray-800">Subtotal</td>
                 <td className="px-3 py-2 text-right font-semibold text-gray-800">{formatCurrency(requestedSubtotal)}</td>
-                <td className="px-3 py-2 text-right font-semibold text-gray-800">
-                  Total a cobrar: {formatCurrency(totalToCharge)}
-                </td>
+                <td className="px-3 py-2 text-right font-bold text-brand">{formatCurrency(totalToCharge)}</td>
               </tr>
             </tfoot>
           </table>
@@ -644,14 +821,6 @@ export default function RegisterPaymentPage({ condominiumId, units, accounts }: 
               <input
                 className="w-full border border-gray-200 rounded-md px-3 py-2 text-sm bg-gray-50"
                 value={contact?.email || ""}
-                readOnly
-              />
-            </div>
-            <div className="md:col-span-2">
-              <label className="text-xs font-semibold text-gray-700 block mb-1">Dirección</label>
-              <input
-                className="w-full border border-gray-200 rounded-md px-3 py-2 text-sm bg-gray-50"
-                value={contact?.address || ""}
                 readOnly
               />
             </div>
@@ -697,7 +866,6 @@ export default function RegisterPaymentPage({ condominiumId, units, accounts }: 
                   className="w-28 border border-gray-200 rounded-md px-2 py-1 text-sm text-right"
                   value={discount}
                   onChange={(e) => setDiscount(Number(parseFloat(e.target.value || "0").toFixed(2)))}
-                  onBlur={(e) => setDiscount(Number(parseFloat(e.target.value || "0").toFixed(2)))}
                 />
                 <input
                   type="text"
@@ -711,7 +879,7 @@ export default function RegisterPaymentPage({ condominiumId, units, accounts }: 
               <span className="text-xs text-gray-500">Desactivado</span>
             )}
           </div>
-          <div className="flex items-center justify-between text-sm text-gray-900">
+          <div className="flex items-center justify-between text-sm text-gray-900 pt-2 border-t">
             <span className="font-semibold">TOTAL A COBRAR</span>
             <span className="font-bold text-lg">{formatCurrency(totalToCharge)}</span>
           </div>
@@ -732,4 +900,3 @@ export default function RegisterPaymentPage({ condominiumId, units, accounts }: 
     </div>
   );
 }
-

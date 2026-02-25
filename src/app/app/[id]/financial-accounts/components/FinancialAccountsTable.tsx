@@ -1,9 +1,10 @@
 "use client";
 
 import Link from "next/link";
-import { BadgeCheck, Ban, Pencil } from "lucide-react";
+import { BadgeCheck, Ban } from "lucide-react";
 import { FinancialAccount } from "@/types/financial";
 import FinancialAccountForm from "./FinancialAccountForm";
+import DeleteAccountButton from "./DeleteAccountButton";
 import { formatCurrency } from "@/lib/utils";
 
 type Props = { accounts: FinancialAccount[]; condominiumId: string };
@@ -71,6 +72,11 @@ export default function FinancialAccountsTable({ accounts, condominiumId }: Prop
               <td className="px-4 py-3 text-right">
                 <div className="flex items-center justify-end gap-2">
                   <FinancialAccountForm condominiumId={condominiumId} account={acc} trigger="icon" />
+                  <DeleteAccountButton
+                    condominiumId={condominiumId}
+                    accountId={acc.id}
+                    accountName={acc.bank_name}
+                  />
                   <Link
                     href={`/app/${condominiumId}/financial-accounts/${acc.id}`}
                     className="text-xs font-semibold text-brand hover:text-brand-dark px-3 py-1 rounded-md border border-brand/40 hover:bg-brand/5 transition"

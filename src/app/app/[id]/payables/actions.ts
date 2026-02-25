@@ -3,6 +3,7 @@
 import { revalidatePath } from "next/cache";
 import { z } from "zod";
 import { createClient } from "@/lib/supabase/server";
+import { logAudit } from "@/lib/audit/logAudit";
 import {
   EgressPaymentInput,
   PayableFilters,
@@ -22,6 +23,7 @@ type PayableRow = {
   id: string;
   supplier_id: string;
   expense_item_id: string;
+  document_type: string;
   issue_date: string;
   due_date: string;
   invoice_number: string;
@@ -32,8 +34,6 @@ type PayableRow = {
   description?: string | null;
   notes?: string | null;
   invoice_file_url?: string | null;
-  op_pdf_url?: string | null;
-  folio_op?: number | null;
   supplier?: { name?: string | null } | null;
   expense_item?: { name?: string | null } | null;
 };
@@ -188,12 +188,44 @@ export async function getFinancialAccounts(condominiumId: string) {
   const supabase = await createClient();
   const { data, error } = await supabase
     .from("financial_accounts")
-    .select("id, bank_name, account_number, is_active")
+    .select("id, bank_name, account_number, account_type, uses_checks, is_active")
     .eq("condominium_id", condominiumId)
     .eq("is_active", true)
     .order("bank_name");
   if (error) return [];
   return data || [];
+}
+
+// Obtener cheques disponibles de una cuenta con control de chequera activo
+export async function getAvailableChecks(condominiumId: string, accountId: string) {
+  const supabase = await createClient();
+
+  // Primero verificar que la cuenta tiene control de cheques
+  const { data: account } = await supabase
+    .from("financial_accounts")
+    .select("id, uses_checks")
+    .eq("id", accountId)
+    .eq("condominium_id", condominiumId)
+    .single();
+
+  if (!account?.uses_checks) {
+    return { usesChecks: false, checks: [] };
+  }
+
+  // Obtener cheques disponibles
+  const { data: checks, error } = await supabase
+    .from("checks")
+    .select("id, check_number")
+    .eq("financial_account_id", accountId)
+    .eq("status", "disponible")
+    .order("check_number");
+
+  if (error) {
+    console.error("Error cargando cheques disponibles", error);
+    return { usesChecks: true, checks: [] };
+  }
+
+  return { usesChecks: true, checks: checks || [] };
 }
 
 export async function createPayable(condominiumId: string, payload: PayableGeneralInput) {
@@ -218,11 +250,12 @@ export async function createPayable(condominiumId: string, payload: PayableGener
       condominium_id: condominiumId,
       supplier_id: parsed.supplier_id,
       expense_item_id: parsed.expense_item_id,
+      document_type: parsed.document_type || "factura",
       issue_date: parsed.issue_date,
       due_date: parsed.due_date,
       total_amount: parsed.total_amount,
       paid_amount: 0,
-      status: "pendiente_aprobacion",
+      status: "pendiente",
       invoice_number: parsed.invoice_number,
       description: parsed.description || null,
       notes:
@@ -230,7 +263,6 @@ export async function createPayable(condominiumId: string, payload: PayableGener
           ? `Pago previsto: ${parsed.planned_payment_method || "sin definir"}${parsed.notes ? ` | ${parsed.notes}` : ""}`
           : parsed.notes || null,
       invoice_file_url: null,
-      folio_op: null,
     })
     .select("id")
     .maybeSingle();
@@ -275,6 +307,7 @@ export async function updatePayable(condominiumId: string, payableId: string, pa
     .update({
       supplier_id: parsed.supplier_id,
       expense_item_id: parsed.expense_item_id,
+      document_type: parsed.document_type || "factura",
       issue_date: parsed.issue_date,
       due_date: parsed.due_date,
       total_amount: parsed.total_amount,
@@ -284,7 +317,6 @@ export async function updatePayable(condominiumId: string, payableId: string, pa
         parsed.planned_payment_method
           ? `Pago previsto: ${parsed.planned_payment_method || "sin definir"}${parsed.notes ? ` | ${parsed.notes}` : ""}`
           : parsed.notes || null,
-      status: "pendiente_aprobacion",
     })
     .eq("id", payableId)
     .eq("condominium_id", condominiumId);
@@ -316,50 +348,46 @@ export async function cancelPayable(condominiumId: string, payableId: string, re
   return { success: true };
 }
 
-export async function approvePayable(condominiumId: string, payableId: string) {
+// Eliminar cuenta por pagar (solo si está pendiente y sin pagos)
+export async function deletePayable(condominiumId: string, payableId: string) {
   const supabase = await createClient();
-  
+
   const { data: existing, error: existingError } = await supabase
     .from("payable_orders")
-    .select("id, status")
+    .select("id, status, paid_amount, invoice_number")
     .eq("id", payableId)
     .eq("condominium_id", condominiumId)
     .maybeSingle();
-    
+
   if (existingError || !existing) {
-    return { error: "OP no encontrada." };
+    return { error: "Cuenta por pagar no encontrada." };
   }
-  
-  if (existing.status === "aprobada") {
-    return { error: "La OP ya está aprobada." };
+
+  // Solo se puede eliminar si está pendiente
+  if (existing.status !== "pendiente") {
+    return { error: "Solo puedes eliminar cuentas por pagar en estado pendiente. Las que tienen pagos solo se pueden anular." };
   }
-  
-  if (["pagada", "parcialmente_pagado"].includes(existing.status)) {
-    return { error: "No puedes aprobar una OP que ya tiene pagos." };
+
+  // Verificar que no tenga pagos
+  if (Number(existing.paid_amount || 0) > 0) {
+    return { error: "No puedes eliminar una cuenta por pagar que ya tiene pagos registrados." };
   }
-  
-  if (existing.status === "anulado") {
-    return { error: "No puedes aprobar una OP anulada." };
-  }
-  
-  // Obtener usuario actual
-  const { data: { user } } = await supabase.auth.getUser();
-  
-  // Llamar función SQL que aprueba y asigna folio
-  const { data, error } = await supabase.rpc('approve_payable_order', {
-    p_payable_id: payableId,
-    p_approved_by_profile_id: user?.id || null
-  });
-  
+
+  // Eliminar (hard delete)
+  const { error } = await supabase
+    .from("payable_orders")
+    .delete()
+    .eq("id", payableId)
+    .eq("condominium_id", condominiumId);
+
   if (error) {
-    console.error("Error aprobando OP", error);
-    return { error: error.message || "No se pudo aprobar la OP." };
+    console.error("Error eliminando cuenta por pagar", error);
+    return { error: "No se pudo eliminar la cuenta por pagar." };
   }
-  
+
   revalidatePath(`/app/${condominiumId}/payables`);
-  revalidatePath(`/app/${condominiumId}/payables/${payableId}`);
-  
-  return { success: true };
+
+  return { success: true, deletedInvoice: existing.invoice_number };
 }
 
 export async function createEgressForPayables(condominiumId: string, payload: EgressPaymentInput) {
@@ -382,10 +410,10 @@ export async function createEgressForPayables(condominiumId: string, payload: Eg
   const supplierMismatch = payables.find((p) => p.supplier_id !== parsed.supplier_id);
   if (supplierMismatch) return { error: "Todas las OP deben ser del mismo proveedor." };
 
-  const invalidStatus = payables.find((p) => 
-    ["anulado", "pagado", "pendiente_aprobacion"].includes((p.status || "").toLowerCase())
+  const invalidStatus = payables.find((p) =>
+    ["anulado", "pagado"].includes((p.status || "").toLowerCase())
   );
-  if (invalidStatus) return { error: "Solo puedes pagar OP aprobadas. Verifica que todas las OP estén aprobadas." };
+  if (invalidStatus) return { error: "No puedes pagar cuentas anuladas o ya pagadas." };
 
   const payablesMap = new Map<string, any>();
   payables.forEach((p) => payablesMap.set(p.id, p));
@@ -440,6 +468,24 @@ export async function createEgressForPayables(condominiumId: string, payload: Eg
     return { error: "No se pudieron vincular las OP al egreso." };
   }
 
+  // ✅ Si se usó un cheque del control de chequera, marcarlo como "usado"
+  if (parsed.check_id && parsed.payment_method === "cheque") {
+    const { error: checkError } = await supabase
+      .from("checks")
+      .update({
+        status: "usado",
+        egress_id: egress.id,
+        issue_date: parsed.payment_date,
+      })
+      .eq("id", parsed.check_id)
+      .eq("status", "disponible"); // Solo si está disponible
+
+    if (checkError) {
+      console.error("Error marcando cheque como usado", checkError);
+      // No fallar todo el proceso, solo loguear
+    }
+  }
+
   for (const item of parsed.payables) {
     const op = payablesMap.get(item.payable_order_id);
     const newPaid = Number(op.paid_amount || 0) + Number(item.amount);
@@ -448,7 +494,7 @@ export async function createEgressForPayables(condominiumId: string, payload: Eg
         ? "pagado"
         : newPaid > 0.009
           ? "parcialmente_pagado"
-          : op.status || "pendiente_aprobacion";
+          : op.status || "pendiente";
     const { error: updateError } = await supabase
       .from("payable_orders")
       .update({
@@ -461,6 +507,21 @@ export async function createEgressForPayables(condominiumId: string, payload: Eg
       console.error("Error actualizando OP despues de pagar", updateError);
     }
   }
+
+  // Audit log: registrar creación de egreso
+  logAudit({
+    condominiumId,
+    tableName: "egresses",
+    recordId: egress.id,
+    action: "CREATE",
+    newValues: {
+      total_amount: total,
+      payment_method: parsed.payment_method,
+      supplier_id: parsed.supplier_id,
+      payables_count: parsed.payables.length,
+      check_id: parsed.check_id || null,
+    },
+  });
 
   revalidatePath(`/app/${condominiumId}/payables`);
   return { success: true, egressId: egress.id, total };

@@ -5,8 +5,15 @@ import { useSearchParams, useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
 import DatePicker from "@/components/ui/DatePicker";
 import { formatCurrency } from "@/lib/utils";
+import { AlertCircle, FileCheck } from "lucide-react";
 
 type Option = { value: string; label: string };
+type AccountOption = Option & { usesChecks: boolean; accountType: string };
+
+type AvailableCheck = {
+  id: string;
+  check_number: number;
+};
 
 type Payable = {
   id: string;
@@ -24,7 +31,7 @@ type Payable = {
 type Props = {
   condominiumId: string;
   suppliers: Option[];
-  accounts: Option[];
+  accounts: AccountOption[];
 };
 
 export default function PayPayablesPage({ condominiumId, suppliers, accounts }: Props) {
@@ -44,6 +51,46 @@ export default function PayPayablesPage({ condominiumId, suppliers, accounts }: 
   const [amounts, setAmounts] = useState<Record<string, number>>({});
   const [proof, setProof] = useState<File | null>(null);
   const [message, setMessage] = useState<{ type: "error" | "success"; text: string } | null>(null);
+
+  // Estado para control de cheques
+  const [availableChecks, setAvailableChecks] = useState<AvailableCheck[]>([]);
+  const [selectedCheckId, setSelectedCheckId] = useState<string>("");
+  const [loadingChecks, setLoadingChecks] = useState(false);
+
+  // Obtener info de la cuenta seleccionada
+  const selectedAccount = accounts.find((a) => a.value === accountId);
+  const accountUsesChecks = selectedAccount?.usesChecks || false;
+  const isCheckMethod = method === "cheque";
+  const showCheckSelector = isCheckMethod && accountUsesChecks;
+  const showManualCheckInput = isCheckMethod && !accountUsesChecks;
+
+  // Cargar cheques disponibles cuando cambia la cuenta y método es cheque
+  useEffect(() => {
+    if (accountId && isCheckMethod && accountUsesChecks) {
+      loadAvailableChecks();
+    } else {
+      setAvailableChecks([]);
+      setSelectedCheckId("");
+    }
+  }, [accountId, method]);
+
+  const loadAvailableChecks = async () => {
+    setLoadingChecks(true);
+    const { data, error } = await supabase
+      .from("checks")
+      .select("id, check_number")
+      .eq("financial_account_id", accountId)
+      .eq("status", "disponible")
+      .order("check_number");
+
+    if (error) {
+      console.error("Error cargando cheques", error);
+      setAvailableChecks([]);
+    } else {
+      setAvailableChecks(data || []);
+    }
+    setLoadingChecks(false);
+  };
 
   useEffect(() => {
     if (supplierId) fetchPayables(supplierId);
@@ -99,24 +146,47 @@ export default function PayPayablesPage({ condominiumId, suppliers, accounts }: 
     if (!supplierId) return setMessage({ type: "error", text: "Selecciona un proveedor." });
     if (!accountId) return setMessage({ type: "error", text: "Selecciona una cuenta bancaria." });
     if (!paymentDate) return setMessage({ type: "error", text: "Selecciona la fecha de pago." });
+
+    // Validación de cheques
+    if (isCheckMethod) {
+      if (accountUsesChecks && !selectedCheckId) {
+        return setMessage({ type: "error", text: "Selecciona un cheque de la lista." });
+      }
+      if (!accountUsesChecks && !reference.trim()) {
+        return setMessage({ type: "error", text: "Ingresa el número de cheque." });
+      }
+    }
+
     if (proof && proof.type !== "application/pdf")
       return setMessage({ type: "error", text: "El comprobante debe ser PDF." });
+
     const selected = payables
       .map((p) => ({ id: p.id, amount: Number(amounts[p.id] || 0) }))
       .filter((p) => p.amount > 0);
     if (!selected.length) return setMessage({ type: "error", text: "Debes pagar al menos una OP." });
+
     setMessage(null);
     startTransition(async () => {
+      // Determinar el número de referencia del cheque
+      let checkReference = reference;
+      if (isCheckMethod && accountUsesChecks && selectedCheckId) {
+        const selectedCheck = availableChecks.find((c) => c.id === selectedCheckId);
+        checkReference = selectedCheck ? selectedCheck.check_number.toString() : "";
+      }
+
       const payload = {
         condominium_id: condominiumId,
         supplier_id: supplierId,
         financial_account_id: accountId,
         payment_method: method,
         payment_date: paymentDate,
-        reference_number: reference || undefined,
+        reference_number: checkReference || undefined,
         notes: notes || undefined,
         payables: selected.map((p) => ({ payable_order_id: p.id, amount: p.amount })),
+        // Incluir check_id si se seleccionó un cheque del control
+        check_id: isCheckMethod && accountUsesChecks ? selectedCheckId : undefined,
       };
+
       const form = new FormData();
       form.append("payload", JSON.stringify(payload));
       if (proof) form.append("proof", proof);
@@ -160,22 +230,34 @@ export default function PayPayablesPage({ condominiumId, suppliers, accounts }: 
           <label className="text-xs font-semibold text-gray-700">Cuenta bancaria</label>
           <select
             value={accountId}
-            onChange={(e) => setAccountId(e.target.value)}
+            onChange={(e) => {
+              setAccountId(e.target.value);
+              setSelectedCheckId("");
+              setReference("");
+            }}
             className="w-full rounded-md border border-gray-200 px-3 py-2 text-sm shadow-sm focus:border-brand focus:ring-brand/20"
           >
             <option value="">Selecciona cuenta</option>
             {accounts.map((a) => (
               <option key={a.value} value={a.value}>
                 {a.label}
+                {a.usesChecks ? " 📋" : ""}
               </option>
             ))}
           </select>
+          {selectedAccount?.usesChecks && (
+            <p className="text-[10px] text-emerald-600">✓ Control de chequera activo</p>
+          )}
         </div>
         <div className="space-y-2">
           <label className="text-xs font-semibold text-gray-700">Método</label>
           <select
             value={method}
-            onChange={(e) => setMethod(e.target.value)}
+            onChange={(e) => {
+              setMethod(e.target.value);
+              setSelectedCheckId("");
+              setReference("");
+            }}
             className="w-full rounded-md border border-gray-200 px-3 py-2 text-sm shadow-sm focus:border-brand focus:ring-brand/20"
           >
             <option value="transferencia">Transferencia</option>
@@ -187,15 +269,70 @@ export default function PayPayablesPage({ condominiumId, suppliers, accounts }: 
           <label className="text-xs font-semibold text-gray-700">Fecha de pago</label>
           <DatePicker required value={paymentDate} onChange={setPaymentDate} />
         </div>
-        <div className="space-y-2">
-          <label className="text-xs font-semibold text-gray-700">Cheque / transferencia</label>
-          <input
-            value={reference}
-            onChange={(e) => setReference(e.target.value)}
-            className="w-full rounded-md border border-gray-200 px-3 py-2 text-sm shadow-sm focus:border-brand focus:ring-brand/20"
-            placeholder="Número de cheque o ref."
-          />
-        </div>
+
+        {/* Campo de cheque: selector o input manual según configuración */}
+        {showCheckSelector && (
+          <div className="space-y-2">
+            <label className="text-xs font-semibold text-gray-700 flex items-center gap-1.5">
+              <FileCheck size={14} className="text-brand" />
+              Cheque a usar *
+            </label>
+            {loadingChecks ? (
+              <div className="w-full rounded-md border border-gray-200 px-3 py-2 text-sm text-gray-500">
+                Cargando cheques...
+              </div>
+            ) : availableChecks.length > 0 ? (
+              <select
+                value={selectedCheckId}
+                onChange={(e) => setSelectedCheckId(e.target.value)}
+                className="w-full rounded-md border border-brand/30 bg-brand/5 px-3 py-2 text-sm shadow-sm focus:border-brand focus:ring-brand/20"
+              >
+                <option value="">Selecciona un cheque</option>
+                {availableChecks.map((c) => (
+                  <option key={c.id} value={c.id}>
+                    #{c.check_number.toString().padStart(6, "0")}
+                  </option>
+                ))}
+              </select>
+            ) : (
+              <div className="w-full rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-700 flex items-center gap-2">
+                <AlertCircle size={14} />
+                No hay cheques disponibles
+              </div>
+            )}
+            <p className="text-[10px] text-gray-500">
+              {availableChecks.length} cheque(s) disponible(s) en esta cuenta
+            </p>
+          </div>
+        )}
+
+        {showManualCheckInput && (
+          <div className="space-y-2">
+            <label className="text-xs font-semibold text-gray-700">Número de cheque *</label>
+            <input
+              value={reference}
+              onChange={(e) => setReference(e.target.value)}
+              className="w-full rounded-md border border-gray-200 px-3 py-2 text-sm shadow-sm focus:border-brand focus:ring-brand/20"
+              placeholder="Ej: 001234"
+            />
+            <p className="text-[10px] text-amber-600">
+              Esta cuenta no tiene control de chequera activo. Ingresa el número manualmente.
+            </p>
+          </div>
+        )}
+
+        {method === "transferencia" && (
+          <div className="space-y-2">
+            <label className="text-xs font-semibold text-gray-700">Referencia de transferencia</label>
+            <input
+              value={reference}
+              onChange={(e) => setReference(e.target.value)}
+              className="w-full rounded-md border border-gray-200 px-3 py-2 text-sm shadow-sm focus:border-brand focus:ring-brand/20"
+              placeholder="Número de comprobante"
+            />
+          </div>
+        )}
+
         <div className="space-y-2">
           <label className="text-xs font-semibold text-gray-700">Notas</label>
           <input
@@ -257,7 +394,7 @@ export default function PayPayablesPage({ condominiumId, suppliers, accounts }: 
               ))}
               {!payables.length && (
                 <tr>
-                  <td className="px-4 py-4 text-center text-gray-500 text-sm" colSpan={6}>
+                  <td className="px-4 py-4 text-center text-gray-500 text-sm" colSpan={7}>
                     No hay OP pendientes para este proveedor.
                   </td>
                 </tr>

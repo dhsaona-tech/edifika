@@ -29,6 +29,9 @@ import {
   Banknote,
   Tags,
   BadgeDollarSign,
+  Settings2,
+  CalendarClock,
+  Handshake,
 } from "lucide-react";
 
 interface SidebarProps {
@@ -53,17 +56,21 @@ const ROLE_ACCESS: Record<string, UserRole[]> = {
   "Cargos (Cobrar)": ['SUPER_ADMIN', 'ADMIN'],
   "Ingresos (REC)": ['SUPER_ADMIN', 'ADMIN'],
   "Creditos": ['SUPER_ADMIN', 'ADMIN'],
+  "Proyectos": ['SUPER_ADMIN', 'ADMIN'],
+  "Convenios de Pago": ['SUPER_ADMIN', 'ADMIN'],
   "Cuentas por Pagar": ['SUPER_ADMIN', 'ADMIN'],
   "Egresos (EG)": ['SUPER_ADMIN', 'ADMIN'],
   "Conciliacion": ['SUPER_ADMIN', 'ADMIN'],
   "Cajas y Bancos": ['SUPER_ADMIN', 'ADMIN'],
   "Presupuesto": ['SUPER_ADMIN', 'ADMIN', 'DIRECTIVA'],
+  "Config. Facturacion": ['SUPER_ADMIN', 'ADMIN'],
   "Anulados": ['SUPER_ADMIN', 'ADMIN'],
   "Reportes Generales": ['SUPER_ADMIN', 'ADMIN', 'DIRECTIVA'],
 };
 
 export default function Sidebar({ condominiumId, userRole }: SidebarProps) {
   const pathname = usePathname();
+
   const getPath = (path: string) => `/app/${condominiumId}${path}`;
 
   const allMenuItems = [
@@ -76,14 +83,14 @@ export default function Sidebar({ condominiumId, userRole }: SidebarProps) {
       items: [
         { name: "Unidades", href: getPath("/units"), icon: Building2 },
         { name: "Directorio", href: getPath("/residents"), icon: Users },
-        { name: "Lecturas", href: getPath("/readings"), icon: Gauge },
-        { name: "Areas Comunales", href: getPath("/amenities"), icon: Palmtree },
+        { name: "Lecturas", href: getPath("/readings"), icon: Gauge, comingSoon: true },
+        { name: "Areas Comunales", href: getPath("/amenities"), icon: Palmtree, comingSoon: true },
         { name: "Proveedores", href: getPath("/suppliers"), icon: Truck },
-        { name: "Empleados", href: getPath("/employees"), icon: Briefcase },
+        { name: "Empleados", href: getPath("/employees"), icon: Briefcase, comingSoon: true },
         { name: "Archivo Virtual", href: getPath("/documents"), icon: FolderOpen },
         { name: "Mi Condominio", href: getPath("/my-condo"), icon: Building },
-        { name: "Directiva", href: getPath("/board"), icon: Gavel },
-        { name: "Tickets", href: getPath("/tickets"), icon: Wrench },
+        { name: "Directiva", href: getPath("/board"), icon: Gavel, comingSoon: true },
+        { name: "Tickets", href: getPath("/tickets"), icon: Wrench, comingSoon: true },
       ],
     },
     {
@@ -93,17 +100,20 @@ export default function Sidebar({ condominiumId, userRole }: SidebarProps) {
         { name: "Cargos (Cobrar)", href: getPath("/charges"), icon: FileText },
         { name: "Ingresos (REC)", href: getPath("/payments"), icon: ArrowDownLeft },
         { name: "Creditos", href: getPath("/credits"), icon: BadgeDollarSign },
+        { name: "Proyectos", href: getPath("/extraordinary-plans"), icon: CalendarClock },
+        { name: "Convenios de Pago", href: getPath("/payment-agreements"), icon: Handshake },
         { name: "Cuentas por Pagar", href: getPath("/payables"), icon: CreditCard },
         { name: "Egresos (EG)", href: getPath("/egresses"), icon: ArrowUpRight },
         { name: "Conciliacion", href: getPath("/reconciliation"), icon: Scale },
         { name: "Cajas y Bancos", href: getPath("/financial-accounts"), icon: Banknote },
         { name: "Presupuesto", href: getPath("/budget"), icon: Wallet },
+        { name: "Config. Facturacion", href: getPath("/billing-settings"), icon: Settings2 },
         { name: "Anulados", href: getPath("/voided"), icon: BarChart3 },
       ],
     },
     {
       title: "Reportes",
-      items: [{ name: "Reportes Generales", href: getPath("/reports"), icon: BarChart3 }],
+      items: [{ name: "Reportes Generales", href: getPath("/reports"), icon: BarChart3, comingSoon: true }],
     },
   ];
 
@@ -162,6 +172,24 @@ export default function Sidebar({ condominiumId, userRole }: SidebarProps) {
             >
               {section.items.map((item) => {
                 const isActive = pathname === item.href || pathname?.startsWith(item.href + "/");
+                const isComingSoon = "comingSoon" in item && item.comingSoon;
+
+                if (isComingSoon) {
+                  return (
+                    <div
+                      key={item.href}
+                      className="flex items-center gap-3 px-3 py-2 rounded-md text-sm font-medium text-gray-400 cursor-not-allowed"
+                      title="Este m\u00f3dulo est\u00e1 en desarrollo"
+                    >
+                      <item.icon size={16} strokeWidth={2} />
+                      <span className="truncate">{item.name}</span>
+                      <span className="ml-auto text-[10px] font-bold bg-amber-100 text-amber-700 px-1.5 py-0.5 rounded-full whitespace-nowrap">
+                        Pronto
+                      </span>
+                    </div>
+                  );
+                }
+
                 return (
                   <Link
                     key={item.href}

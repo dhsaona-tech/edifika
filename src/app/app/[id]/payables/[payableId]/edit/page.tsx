@@ -32,6 +32,7 @@ export default async function EditPayablePage({ params }: PageProps) {
   const defaults = {
     supplier_id: payable.supplier_id,
     expense_item_id: payable.expense_item_id,
+    document_type: payable.document_type || "factura",
     issue_date: payable.issue_date,
     due_date: payable.due_date,
     invoice_number: payable.invoice_number,

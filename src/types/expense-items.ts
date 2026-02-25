@@ -1,6 +1,9 @@
 export type CategoriaRubro = "gasto" | "ingreso";
 export type ClasificacionRubro = "ordinario" | "extraordinario";
 
+// Origen del rubro: creado desde presupuesto o manualmente
+export type RubroSource = "budget" | "manual" | "project";
+
 export type Rubro = {
   id: string;
   created_at?: string;
@@ -12,6 +15,12 @@ export type Rubro = {
   allocation_method: string;
   is_active: boolean;
   parent_id: string | null;
+  // Nuevos campos para control de origen y archivado
+  source?: RubroSource; // De dónde vino el rubro
+  source_budget_id?: string | null; // ID del presupuesto que lo creó (si aplica)
+  source_project_id?: string | null; // ID del proyecto que lo creó (si aplica)
+  is_archived?: boolean; // Archivado (para rubros de presupuestos anteriores)
+  archived_at?: string | null;
 };
 
 export type RubroConSubrubros = {

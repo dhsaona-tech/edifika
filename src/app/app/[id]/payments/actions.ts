@@ -4,6 +4,7 @@ import { revalidatePath } from "next/cache";
 import { z } from "zod";
 import { createClient } from "@/lib/supabase/server";
 import { getCurrentUser } from "@/lib/auth/getUser";
+import { logAudit } from "@/lib/audit/logAudit";
 import {
   PaymentApplyChargesInput,
   PaymentDirectInput,
@@ -300,48 +301,47 @@ export async function createPayment(
     return { error: "La suma asignada supera el monto del pago." };
   }
 
-  // ========== VALIDACIÓN CRÍTICA: Re-verificar balances reales desde el servidor ==========
-  // NO confiar en charge_balance que viene del cliente - puede estar manipulado
+  // ✅ VALIDACIÓN SERVIDOR: Re-fetch balances reales desde DB (no confiar en cliente)
   if (allocations.length > 0) {
     const chargeIds = allocations.map((a) => a.charge_id);
-    const { data: chargesReales, error: chargesError } = await supabase
+    const { data: realCharges, error: chargesError } = await supabase
       .from("charges")
-      .select("id, balance, status, total_amount, paid_amount")
+      .select("id, balance, status")
       .in("id", chargeIds)
       .eq("condominium_id", condominiumId);
 
-    if (chargesError || !chargesReales) {
-      return { error: "Error al verificar los cargos. Intenta de nuevo." };
+    if (chargesError || !realCharges) {
+      return { error: "No se pudieron validar los cargos." };
     }
 
     // Crear mapa de balances reales
-    const balanceReal = new Map<string, number>();
-    for (const cargo of chargesReales) {
-      // Calcular balance real: total - pagado (no confiar en campo balance si existe)
-      const realBalance = Number(cargo.total_amount || 0) - Number(cargo.paid_amount || 0);
-      balanceReal.set(cargo.id, Math.max(0, realBalance));
+    const realBalanceMap = new Map<string, number>();
+    realCharges.forEach((c) => realBalanceMap.set(c.id, Number(c.balance || 0)));
 
-      // Verificar que el cargo esté pendiente
-      if (cargo.status !== "pendiente") {
-        return { error: `El cargo ya no está pendiente (estado: ${cargo.status}). Recarga la página.` };
-      }
+    // Validar que todos los cargos existen y son del condominio correcto
+    if (realCharges.length !== chargeIds.length) {
+      return { error: "Uno o más cargos no existen o no pertenecen a este condominio." };
     }
 
-    // Verificar que no se asigne más que el balance real
+    // Validar que ningún cargo esté cancelado
+    const canceledCharge = realCharges.find((c) => c.status === "cancelado" || c.status === "eliminado");
+    if (canceledCharge) {
+      return { error: "No puedes asignar pagos a cargos cancelados o eliminados." };
+    }
+
+    // Validar que el monto asignado no exceda el balance REAL
     for (const alloc of allocations) {
-      const realBal = balanceReal.get(alloc.charge_id);
-      if (realBal === undefined) {
-        return { error: "Uno de los cargos seleccionados no existe o no pertenece a este condominio." };
-      }
-      if (alloc.amount_allocated > realBal + 0.01) {
+      const realBalance = realBalanceMap.get(alloc.charge_id) || 0;
+      if (alloc.amount_allocated > realBalance + 0.01) {
         return {
-          error: `No puedes asignar $${alloc.amount_allocated.toFixed(2)} al cargo. El saldo real es $${realBal.toFixed(2)}.`,
+          error: `El monto asignado (${alloc.amount_allocated.toFixed(2)}) excede el saldo real del cargo (${realBalance.toFixed(2)}). Recarga la página e intenta de nuevo.`
         };
       }
     }
   }
 
-  // ========== FIN VALIDACIÓN ==========
+  // ✅ ELIMINADO: reserve_folio_rec
+  // El trigger assign_folio_rec() lo hace automáticamente
 
   const { data, error } = await supabase.rpc("apply_payment_to_charges", {
     in_condominium_id: condominiumId,
@@ -366,8 +366,24 @@ export async function createPayment(
     return { error: error.message || "No se pudo crear el ingreso." };
   }
 
+  const paymentId = data as string;
+
+  // Audit log: registrar creación de pago
+  logAudit({
+    condominiumId,
+    tableName: "payments",
+    recordId: paymentId,
+    action: "CREATE",
+    newValues: {
+      total_amount: parsedGeneral.total_amount,
+      payment_method: parsedGeneral.payment_method,
+      unit_id: parsedApply?.unit_id || parsedDirect?.unit_id || null,
+      allocations_count: allocations.length,
+    },
+  });
+
   revalidatePath(`/app/${condominiumId}/payments`);
-  return { success: true, paymentId: data as string };
+  return { success: true, paymentId };
 }
 
 export async function cancelPayment(
@@ -380,9 +396,42 @@ export async function cancelPayment(
   if (!normalizedReason) {
     return { error: "Debes ingresar el motivo de anulación." };
   }
-  
+
   const supabase = await createClient();
-  
+
+  // REGLA 10.5: Verificar si el pago está conciliado (bloqueado)
+  // Usar la función SQL is_payment_reconciled si existe, sino hacer consulta directa
+  try {
+    const { data: isReconciled, error: rpcError } = await supabase.rpc("is_payment_reconciled", {
+      in_payment_id: paymentId,
+    });
+
+    if (!rpcError && isReconciled === true) {
+      return {
+        error: "Este ingreso está conciliado y no puede ser anulado. Para anularlo, primero debe eliminar la conciliación bancaria correspondiente."
+      };
+    }
+  } catch {
+    // Si la función no existe, hacer consulta directa
+    const { data: reconciledItem } = await supabase
+      .from("reconciliation_items")
+      .select(`id, reconciliation:reconciliations!inner(status)`)
+      .eq("payment_id", paymentId)
+      .limit(1)
+      .maybeSingle();
+
+    if (reconciledItem) {
+      const reconciliation = reconciledItem.reconciliation as any;
+      const status = Array.isArray(reconciliation) ? reconciliation[0]?.status : reconciliation?.status;
+
+      if (status === "conciliada") {
+        return {
+          error: "Este ingreso está conciliado y no puede ser anulado. Para anularlo, primero debe eliminar la conciliación bancaria correspondiente."
+        };
+      }
+    }
+  }
+
   let profileId = cancelledByProfileId;
   if (!profileId) {
     const user = await getCurrentUser();
@@ -403,9 +452,20 @@ export async function cancelPayment(
     return { error: error.message || "No se pudo anular el ingreso." };
   }
   
+  // Audit log: registrar anulación de pago
+  logAudit({
+    condominiumId,
+    tableName: "payments",
+    recordId: paymentId,
+    action: "ANULACION",
+    newValues: { reason: normalizedReason },
+    performedBy: cancelledBy,
+    notes: `Anulación de ingreso: ${normalizedReason}`,
+  });
+
   revalidatePath(`/app/${condominiumId}/payments`);
   revalidatePath(`/app/${condominiumId}/payments/${paymentId}`);
-  
+
   return { success: true, result: data };
 }
 
@@ -520,5 +580,497 @@ export async function rejectPaymentReport(condominiumId: string, reportId: strin
   }
 
   revalidatePath(`/app/${condominiumId}/payment-reports`);
+  return { success: true };
+}
+
+// ============================================================================
+// PRONTO PAGO
+// ============================================================================
+
+export async function checkEarlyPaymentEligibility(
+  condominiumId: string,
+  unitId: string,
+  chargeIds: string[]
+) {
+  const supabase = await createClient();
+
+  // Verificar configuración de pronto pago
+  const { data: settings } = await supabase
+    .from("condominium_billing_settings")
+    .select("early_payment_enabled")
+    .eq("condominium_id", condominiumId)
+    .maybeSingle();
+
+  if (!settings?.early_payment_enabled) {
+    return { eligible: false, reason: "Pronto pago no habilitado", discount_amount: 0 };
+  }
+
+  // Llamar función RPC
+  const { data, error } = await supabase.rpc("check_early_payment_eligibility", {
+    p_unit_id: unitId,
+    p_charge_ids: chargeIds,
+  });
+
+  if (error) {
+    console.error("Error verificando elegibilidad de pronto pago", error);
+    return { eligible: false, reason: error.message, discount_amount: 0 };
+  }
+
+  const result = data?.[0] || { eligible: false, reason: "Error desconocido", discount_amount: 0 };
+  return {
+    eligible: result.eligible,
+    reason: result.reason,
+    discount_amount: Number(result.discount_amount || 0),
+  };
+}
+
+export async function getChargesWithEarlyPaymentInfo(condominiumId: string, unitId: string) {
+  const supabase = await createClient();
+
+  const { data, error } = await supabase
+    .from("charges")
+    .select(`
+      id,
+      period,
+      description,
+      due_date,
+      total_amount,
+      paid_amount,
+      balance,
+      charge_type,
+      early_payment_eligible,
+      early_payment_amount,
+      early_payment_deadline,
+      early_payment_applied,
+      expense_item:expense_items(name)
+    `)
+    .eq("condominium_id", condominiumId)
+    .eq("unit_id", unitId)
+    .eq("status", "pendiente")
+    .order("due_date", { ascending: true });
+
+  if (error) {
+    console.error("Error cargando cargos con info de pronto pago", error);
+    return [];
+  }
+
+  return (data || []).map((c: any) => ({
+    id: c.id,
+    period: c.period,
+    expense_item: Array.isArray(c.expense_item) ? c.expense_item[0] : c.expense_item,
+    description: c.description,
+    due_date: c.due_date,
+    total_amount: c.total_amount,
+    paid_amount: c.paid_amount,
+    balance: c.balance,
+    charge_type: c.charge_type,
+    early_payment_eligible: c.early_payment_eligible || false,
+    early_payment_amount: Number(c.early_payment_amount || 0),
+    early_payment_deadline: c.early_payment_deadline,
+    early_payment_applied: c.early_payment_applied || false,
+  }));
+}
+
+// ============================================================================
+// CRÉDITOS / SALDOS A FAVOR
+// ============================================================================
+
+export async function getUnitCreditBalance(condominiumId: string, unitId: string): Promise<number> {
+  const supabase = await createClient();
+
+  const { data } = await supabase
+    .from("units")
+    .select("credit_balance")
+    .eq("id", unitId)
+    .eq("condominium_id", condominiumId)
+    .maybeSingle();
+
+  return Number(data?.credit_balance || 0);
+}
+
+export async function applyCreditToPayment(
+  condominiumId: string,
+  unitId: string,
+  chargeIds: string[],
+  creditAmount: number
+) {
+  const supabase = await createClient();
+
+  // Verificar saldo disponible
+  const currentBalance = await getUnitCreditBalance(condominiumId, unitId);
+  if (currentBalance < creditAmount - 0.01) {
+    return { error: "Saldo a favor insuficiente" };
+  }
+
+  // Obtener cargos
+  const { data: charges } = await supabase
+    .from("charges")
+    .select("id, balance, paid_amount")
+    .in("id", chargeIds)
+    .eq("condominium_id", condominiumId)
+    .eq("unit_id", unitId)
+    .eq("status", "pendiente");
+
+  if (!charges?.length) {
+    return { error: "No se encontraron los cargos" };
+  }
+
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+
+  let remainingCredit = creditAmount;
+  let appliedTotal = 0;
+
+  // Aplicar crédito a cada cargo (FIFO)
+  for (const charge of charges) {
+    if (remainingCredit <= 0.01) break;
+
+    const applyAmount = Math.min(remainingCredit, charge.balance);
+    const newBalance = Math.round((charge.balance - applyAmount) * 100) / 100;
+    const newStatus = newBalance <= 0.01 ? "pagado" : "pendiente";
+
+    // Actualizar cargo
+    const newPaidAmount = Number(charge.paid_amount || 0) + applyAmount;
+    await supabase
+      .from("charges")
+      .update({
+        balance: newBalance,
+        paid_amount: newPaidAmount,
+        status: newStatus,
+      })
+      .eq("id", charge.id);
+
+    // Registrar movimiento de crédito
+    await supabase.from("unit_credits").insert({
+      condominium_id: condominiumId,
+      unit_id: unitId,
+      movement_type: "credit_out",
+      amount: -applyAmount,
+      running_balance: 0, // Se calcula en trigger
+      charge_id: charge.id,
+      description: `Aplicado a cargo pendiente`,
+      created_by: user?.id || null,
+    });
+
+    remainingCredit -= applyAmount;
+    appliedTotal += applyAmount;
+  }
+
+  revalidatePath(`/app/${condominiumId}/payments`);
+  revalidatePath(`/app/${condominiumId}/charges`);
+  revalidatePath(`/app/${condominiumId}/units/${unitId}`);
+
+  return { success: true, applied_amount: appliedTotal };
+}
+
+// ============================================================================
+// MULTI-UNIDAD: Obtener otras unidades del mismo propietario
+// ============================================================================
+
+export async function getOwnerOtherUnits(condominiumId: string, unitId: string) {
+  const supabase = await createClient();
+
+  // Primero obtener el propietario principal de la unidad seleccionada
+  const { data: primaryContact } = await supabase
+    .from("unit_contacts")
+    .select("profile_id")
+    .eq("unit_id", unitId)
+    .eq("is_primary_contact", true)
+    .eq("relationship_type", "OWNER")
+    .is("end_date", null)
+    .maybeSingle();
+
+  if (!primaryContact?.profile_id) {
+    return [];
+  }
+
+  // Buscar otras unidades donde esta persona es propietario
+  const { data: otherUnits } = await supabase
+    .from("unit_contacts")
+    .select(`
+      unit_id,
+      unit:units!inner(
+        id,
+        identifier,
+        full_identifier,
+        condominium_id,
+        status
+      )
+    `)
+    .eq("profile_id", primaryContact.profile_id)
+    .eq("relationship_type", "OWNER")
+    .eq("is_primary_contact", true)
+    .is("end_date", null)
+    .neq("unit_id", unitId); // Excluir la unidad actual
+
+  if (!otherUnits?.length) {
+    return [];
+  }
+
+  // Filtrar por condominio y estado activo
+  const filtered = otherUnits
+    .filter((uc: any) => {
+      const unit = Array.isArray(uc.unit) ? uc.unit[0] : uc.unit;
+      return unit?.condominium_id === condominiumId && unit?.status === "activa";
+    })
+    .map((uc: any) => {
+      const unit = Array.isArray(uc.unit) ? uc.unit[0] : uc.unit;
+      return {
+        id: unit.id,
+        identifier: unit.identifier,
+        full_identifier: unit.full_identifier,
+      };
+    });
+
+  return filtered;
+}
+
+// Obtener cargos pendientes de múltiples unidades
+export async function getPendingChargesMultiUnit(
+  condominiumId: string,
+  unitIds: string[]
+): Promise<(ChargeForPayment & { unit_id: string; unit_identifier: string })[]> {
+  if (!unitIds.length) return [];
+
+  const supabase = await createClient();
+
+  // Obtener cargos
+  const { data, error } = await supabase
+    .from("charges")
+    .select(`
+      id,
+      unit_id,
+      period,
+      description,
+      due_date,
+      total_amount,
+      paid_amount,
+      balance,
+      expense_item:expense_items(name),
+      unit:units(identifier, full_identifier)
+    `)
+    .eq("condominium_id", condominiumId)
+    .in("unit_id", unitIds)
+    .eq("status", "pendiente")
+    .order("due_date", { ascending: true });
+
+  if (error) {
+    console.error("Error cargando cargos multi-unidad", error);
+    return [];
+  }
+
+  return (data || []).map((c: any) => {
+    const unit = Array.isArray(c.unit) ? c.unit[0] : c.unit;
+    return {
+      id: c.id,
+      unit_id: c.unit_id,
+      unit_identifier: unit?.full_identifier || unit?.identifier || "—",
+      period: c.period,
+      expense_item: Array.isArray(c.expense_item) ? c.expense_item[0] : c.expense_item,
+      description: c.description,
+      due_date: c.due_date,
+      total_amount: c.total_amount,
+      paid_amount: c.paid_amount,
+      balance: c.balance,
+    };
+  });
+}
+
+// ============================================================================
+// INGRESOS NO IDENTIFICADOS
+// ============================================================================
+
+export type UnidentifiedPayment = {
+  id: string;
+  condominium_id: string;
+  payment_date: string;
+  amount: number;
+  payment_method: string;
+  reference_number: string | null;
+  bank_reference: string | null;
+  financial_account_id: string;
+  notes: string | null;
+  status: "pendiente" | "asignado" | "devuelto";
+  assigned_payment_id: string | null;
+  assigned_at: string | null;
+  assigned_by: string | null;
+  created_at: string;
+  financial_account?: { bank_name: string; account_number: string } | null;
+};
+
+export async function listUnidentifiedPayments(condominiumId: string) {
+  const supabase = await createClient();
+
+  try {
+    const { data, error } = await supabase
+      .from("unidentified_payments")
+      .select(`
+        *,
+        financial_account:financial_accounts(bank_name, account_number)
+      `)
+      .eq("condominium_id", condominiumId)
+      .order("payment_date", { ascending: false });
+
+    if (error) {
+      // Si la tabla no existe, retornar vacío
+      if (error.code === "42P01" || error.message?.includes("does not exist")) {
+        console.warn("Tabla unidentified_payments no existe aún");
+        return [];
+      }
+      // Error de permisos RLS - retornar vacío silenciosamente
+      if (error.code === "PGRST301" || error.message?.includes("permission")) {
+        console.warn("Sin permisos para ver pagos no identificados");
+        return [];
+      }
+      console.error("Error listando pagos no identificados:", error.message || error.code || "Error desconocido");
+      return [];
+    }
+
+    return (data || []).map((p: any) => ({
+      ...p,
+      financial_account: Array.isArray(p.financial_account)
+        ? p.financial_account[0]
+        : p.financial_account,
+    })) as UnidentifiedPayment[];
+  } catch (err) {
+    // Capturar errores de red u otros
+    console.error("Error inesperado listando pagos no identificados:", err);
+    return [];
+  }
+}
+
+export async function createUnidentifiedPayment(
+  condominiumId: string,
+  data: {
+    payment_date: string;
+    amount: number;
+    payment_method: string;
+    reference_number?: string;
+    bank_reference?: string;
+    financial_account_id: string;
+    notes?: string;
+  }
+) {
+  const supabase = await createClient();
+
+  const { data: result, error } = await supabase
+    .from("unidentified_payments")
+    .insert({
+      condominium_id: condominiumId,
+      payment_date: data.payment_date,
+      amount: data.amount,
+      payment_method: data.payment_method,
+      reference_number: data.reference_number || null,
+      bank_reference: data.bank_reference || null,
+      financial_account_id: data.financial_account_id,
+      notes: data.notes || null,
+      status: "pendiente",
+    })
+    .select("id")
+    .single();
+
+  if (error) {
+    console.error("Error creando pago no identificado", error);
+    return { error: error.message || "No se pudo registrar el pago no identificado" };
+  }
+
+  revalidatePath(`/app/${condominiumId}/payments`);
+  return { success: true, id: result.id };
+}
+
+export async function assignUnidentifiedPayment(
+  condominiumId: string,
+  unidentifiedPaymentId: string,
+  unitId: string,
+  allocations: Array<{ charge_id: string; amount_allocated: number; charge_balance: number }>
+) {
+  const supabase = await createClient();
+
+  // Obtener el pago no identificado
+  const { data: unidentified, error: fetchError } = await supabase
+    .from("unidentified_payments")
+    .select("*")
+    .eq("id", unidentifiedPaymentId)
+    .eq("condominium_id", condominiumId)
+    .eq("status", "pendiente")
+    .single();
+
+  if (fetchError || !unidentified) {
+    return { error: "Pago no identificado no encontrado o ya asignado" };
+  }
+
+  // Crear el pago real usando la función existente
+  const paymentResult = await createPayment(condominiumId, {
+    general: {
+      condominium_id: condominiumId,
+      financial_account_id: unidentified.financial_account_id,
+      payment_date: unidentified.payment_date,
+      total_amount: unidentified.amount,
+      payment_method: unidentified.payment_method,
+      reference_number: unidentified.reference_number || unidentified.bank_reference || "",
+      notes: `Asignado desde pago no identificado. ${unidentified.notes || ""}`.trim(),
+    },
+    apply: {
+      unit_id: unitId,
+      allocations,
+      allow_unassigned: true,
+    },
+    direct: null,
+  });
+
+  if ("error" in paymentResult && paymentResult.error) {
+    return { error: paymentResult.error };
+  }
+
+  const paymentId = (paymentResult as { paymentId?: string }).paymentId;
+
+  // Obtener usuario actual
+  const { data: { user } } = await supabase.auth.getUser();
+
+  // Marcar como asignado
+  const { error: updateError } = await supabase
+    .from("unidentified_payments")
+    .update({
+      status: "asignado",
+      assigned_payment_id: paymentId,
+      assigned_at: new Date().toISOString(),
+      assigned_by: user?.id || null,
+    })
+    .eq("id", unidentifiedPaymentId)
+    .eq("condominium_id", condominiumId);
+
+  if (updateError) {
+    console.error("Error actualizando pago no identificado", updateError);
+    // El pago ya se creó, solo falló la actualización del estado
+  }
+
+  revalidatePath(`/app/${condominiumId}/payments`);
+  return { success: true, paymentId };
+}
+
+export async function markUnidentifiedAsReturned(
+  condominiumId: string,
+  unidentifiedPaymentId: string,
+  reason: string
+) {
+  const supabase = await createClient();
+
+  const { error } = await supabase
+    .from("unidentified_payments")
+    .update({
+      status: "devuelto",
+      notes: reason,
+    })
+    .eq("id", unidentifiedPaymentId)
+    .eq("condominium_id", condominiumId)
+    .eq("status", "pendiente");
+
+  if (error) {
+    console.error("Error marcando pago como devuelto", error);
+    return { error: "No se pudo marcar como devuelto" };
+  }
+
+  revalidatePath(`/app/${condominiumId}/payments`);
   return { success: true };
 }

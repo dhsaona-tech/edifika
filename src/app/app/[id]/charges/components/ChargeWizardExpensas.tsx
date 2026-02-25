@@ -213,7 +213,7 @@ export default function ChargeWizardExpensas({ condominiumId, rubrosIngreso, met
   };
 
   return (
-    <div className="bg-white border border-gray-200 rounded-xl p-4 shadow-sm space-y-4">
+    <div id="expensas" className="bg-white border border-gray-200 rounded-xl p-4 shadow-sm space-y-4">
       <div className="flex items-center justify-between">
         <div>
           <h3 className="text-lg font-semibold text-gray-900">Expensas mensuales</h3>

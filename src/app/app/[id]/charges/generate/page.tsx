@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { getActiveDistributionMethod, getRubrosIngreso, getUnitsForCharges } from "../actions";
 import ChargeWizardExpensas from "../components/ChargeWizardExpensas";
+import ChargeWizardServicios from "../components/ChargeWizardServicios";
 import ChargeIndividualForm from "../components/ChargeIndividualForm";
 
 type PageProps = {
@@ -25,7 +26,7 @@ export default async function ChargesGeneratePage({ params }: PageProps) {
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-semibold">Generar cuentas por cobrar</h1>
-          <p className="text-sm text-muted-foreground">Expensas mensuales via presupuesto y cargos individuales.</p>
+          <p className="text-sm text-muted-foreground">Expensas mensuales, servicios básicos y cargos individuales.</p>
         </div>
         <div className="flex items-center gap-2">
           <Link
@@ -38,10 +39,24 @@ export default async function ChargesGeneratePage({ params }: PageProps) {
         </div>
       </div>
 
+      {/* Quick navigation */}
+      <div className="flex items-center gap-2 text-sm">
+        <span className="text-gray-500">Ir a:</span>
+        <a href="#expensas" className="text-purple-600 hover:underline font-medium">Expensas Mensuales</a>
+        <span className="text-gray-300">•</span>
+        <a href="#servicios" className="text-purple-600 hover:underline font-medium">Servicios Básicos</a>
+      </div>
+
       <ChargeWizardExpensas
         condominiumId={condominiumId}
         rubrosIngreso={rubros}
         metodoDistribucion={metodo}
+        unidadesBase={unidadesBase}
+      />
+
+      <ChargeWizardServicios
+        condominiumId={condominiumId}
+        rubrosIngreso={rubros}
         unidadesBase={unidadesBase}
       />
     </div>

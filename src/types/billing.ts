@@ -163,6 +163,26 @@ export interface ExtraordinaryPlanUnit {
 }
 
 // ============================================================================
+// COTIZACIONES DE PROYECTOS
+// ============================================================================
+
+export interface ProjectQuotation {
+  id: string;
+  extraordinary_plan_id: string;
+  file_path: string;
+  file_name: string;
+  is_winner: boolean;
+  notes: string | null;
+  created_at: string;
+}
+
+export interface ProjectQuotationFormData {
+  file: File;
+  is_winner?: boolean;
+  notes?: string;
+}
+
+// ============================================================================
 // CONVENIOS DE PAGO
 // ============================================================================
 
@@ -321,6 +341,9 @@ export interface ExtraordinaryPlanFormData {
     unit_id: string;
     total_amount: number;
   }>;
+  // Para crear nuevo rubro extraordinario
+  create_new_rubro?: boolean;
+  new_rubro_name?: string;
 }
 
 export interface PaymentAgreementFormData {

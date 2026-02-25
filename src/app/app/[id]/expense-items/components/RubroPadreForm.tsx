@@ -1,15 +1,16 @@
 "use client";
 
 import { useRef, useState, useTransition } from "react";
-import { Pencil, Plus } from "lucide-react";
+import { Pencil, Plus, AlertTriangle } from "lucide-react";
 import { crearRubroPadre, actualizarRubroPadre } from "../actions";
-import { CategoriaRubro, Rubro } from "@/types/expense-items";
+import { CategoriaRubro, ContextoPresupuestoDetallado, Rubro } from "@/types/expense-items";
 
 type Props = {
   condominiumId: string;
   rubro?: Rubro;
   categoriaForzada?: CategoriaRubro;
   trigger?: "button" | "icon";
+  contextoPresupuesto?: ContextoPresupuestoDetallado;
 };
 
 export default function RubroPadreForm({
@@ -17,6 +18,7 @@ export default function RubroPadreForm({
   rubro,
   categoriaForzada,
   trigger = "button",
+  contextoPresupuesto,
 }: Props) {
   const [open, setOpen] = useState(false);
   const [isPending, startTransition] = useTransition();
@@ -28,6 +30,11 @@ export default function RubroPadreForm({
   const defaultClassification = (rubro?.classification || "ordinario") as "ordinario" | "extraordinario";
   const defaultCategoryValue = (defaultCategory || "gasto").toString().toLowerCase();
   const defaultClassificationValue = (defaultClassification || "ordinario").toString().toLowerCase();
+
+  // Verificar si hay presupuesto detallado activo
+  const hayPresupuestoActivo = contextoPresupuesto?.budgetType === "detallado";
+  // Si hay presupuesto activo y la categoría es gasto, solo se permite extraordinario
+  const soloExtraordinario = hayPresupuestoActivo && defaultCategory === "gasto" && !isEdit;
 
   const labelClass = "text-[11px] font-bold text-gray-600 uppercase mb-1 block";
   const inputClass =
@@ -165,19 +172,33 @@ export default function RubroPadreForm({
                   <label className={labelClass}>Clasificacion *</label>
                   <select
                     name="classification"
-                    defaultValue={defaultClassificationValue}
+                    defaultValue={soloExtraordinario ? "extraordinario" : defaultClassificationValue}
                     className={selectClass}
-                    disabled={!!rubro}
+                    disabled={!!rubro || soloExtraordinario}
                   >
                     {classificationOptions.map((opt) => (
-                      <option key={opt.value} value={opt.value}>
+                      <option
+                        key={opt.value}
+                        value={opt.value}
+                        disabled={soloExtraordinario && opt.value === "ordinario"}
+                      >
                         {opt.label}
                       </option>
                     ))}
                   </select>
-                  <p className="text-[11px] text-gray-500 mt-1">
-                    Los rubros de gasto ordinario se usan en presupuesto detallado; extraordinario queda fuera del anual.
-                  </p>
+                  {soloExtraordinario ? (
+                    <div className="flex items-start gap-2 mt-2 p-2 bg-amber-50 border border-amber-200 rounded-md">
+                      <AlertTriangle size={14} className="text-amber-600 mt-0.5 flex-shrink-0" />
+                      <p className="text-[11px] text-amber-800">
+                        Los rubros de gasto ordinario se heredan automáticamente del presupuesto activo.
+                        Solo puedes crear rubros extraordinarios aquí.
+                      </p>
+                    </div>
+                  ) : (
+                    <p className="text-[11px] text-gray-500 mt-1">
+                      Los rubros de gasto ordinario se usan en presupuesto detallado; extraordinario queda fuera del anual.
+                    </p>
+                  )}
                 </div>
               </div>
 

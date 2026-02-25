@@ -31,10 +31,10 @@ export default async function ExtraordinaryPlansPage({ params, searchParams }: P
             </div>
             <div>
               <h1 className="text-lg font-bold text-gray-900 tracking-tight">
-                Planes Extraordinarios
+                Proyectos (Cuotas Extras)
               </h1>
               <p className="text-xs text-gray-500">
-                Cuotas extraordinarias diferidas para proyectos especiales
+                Proyectos especiales con cuotas extraordinarias diferidas
               </p>
             </div>
           </div>
@@ -45,7 +45,7 @@ export default async function ExtraordinaryPlansPage({ params, searchParams }: P
           className="flex items-center gap-2 bg-brand hover:bg-brand-dark text-white px-4 py-2 rounded-md transition-all shadow-sm hover:shadow-md font-medium text-sm"
         >
           <Plus size={16} />
-          Nuevo Plan
+          Nuevo Proyecto
         </Link>
       </div>
 

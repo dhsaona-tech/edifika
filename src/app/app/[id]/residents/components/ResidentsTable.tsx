@@ -12,27 +12,27 @@ export default function ResidentsTable({ residents, condominiumId }: Props) {
     <div className="overflow-x-auto">
       <table className="w-full text-left border-collapse">
         <thead>
-          <tr className="bg-gray-50/50 border-b border-gray-200 text-[10px] uppercase tracking-wider text-gray-500 font-bold">
-            <th className="px-6 py-3 font-bold">Residente</th>
-            <th className="px-6 py-3 font-bold">Contacto</th>
-            <th className="px-6 py-3 font-bold text-center">Roles</th>
-            <th className="px-6 py-3 font-bold">Unidades</th>
-            <th className="px-6 py-3 font-bold text-right">Acciones</th>
+          <tr className="bg-gray-50 border-b border-gray-200">
+            <th className="px-3 py-1.5 text-left text-[11px] font-bold text-gray-600 uppercase tracking-wider">Residente</th>
+            <th className="px-3 py-1.5 text-left text-[11px] font-bold text-gray-600 uppercase tracking-wider">Contacto</th>
+            <th className="px-3 py-1.5 text-center text-[11px] font-bold text-gray-600 uppercase tracking-wider">Roles</th>
+            <th className="px-3 py-1.5 text-left text-[11px] font-bold text-gray-600 uppercase tracking-wider">Unidades</th>
+            <th className="px-3 py-1.5 text-right text-[11px] font-bold text-gray-600 uppercase tracking-wider">Acciones</th>
           </tr>
         </thead>
         <tbody className="divide-y divide-gray-100 bg-white">
           {residents.map((resident) => (
-            <tr key={resident.id} className="hover:bg-slate-50/80 transition-colors group">
+            <tr key={resident.id} className="hover:bg-gray-50 transition-colors group">
               
               {/* RESIDENTE */}
-              <td className="px-6 py-3">
-                <div className="flex items-center gap-3">
-                  <div className="h-9 w-9 rounded-full bg-brand text-white flex items-center justify-center text-xs font-bold shrink-0 shadow-sm border border-purple-100">
+              <td className="px-3 py-1.5">
+                <div className="flex items-center gap-2">
+                  <div className="h-7 w-7 rounded-full bg-brand/10 text-brand flex items-center justify-center text-[10px] font-bold shrink-0 border border-brand/20">
                     {resident.full_name ? resident.full_name.charAt(0).toUpperCase() : "?"}
                   </div>
                   <div>
-                    <div className="text-sm font-bold text-gray-900 leading-tight">{resident.full_name}</div>
-                    <div className="text-[10px] text-gray-400 font-mono mt-0.5">
+                    <div className="text-[13px] font-semibold text-gray-900 leading-tight">{resident.full_name}</div>
+                    <div className="text-[10px] text-gray-500 font-mono mt-0.5">
                         {resident.national_id || "Sin ID"}
                     </div>
                   </div>
@@ -40,77 +40,67 @@ export default function ResidentsTable({ residents, condominiumId }: Props) {
               </td>
 
               {/* CONTACTO */}
-              <td className="px-6 py-3">
-                <div className="flex flex-col gap-1.5">
+              <td className="px-3 py-1.5">
+                <div className="flex flex-col gap-0.5">
                     {resident.email && (
-                        <div className="flex items-center gap-2 text-xs text-gray-600">
-                            <Mail className="w-3.5 h-3.5 text-gray-400" />
-                            <span className="truncate max-w-[160px]">{resident.email}</span>
+                        <div className="flex items-center gap-1.5 text-[11px] text-gray-600">
+                            <Mail className="w-3 h-3 text-gray-400 shrink-0" />
+                            <span className="truncate max-w-[140px]">{resident.email}</span>
                         </div>
                     )}
                     {resident.phone && (
-                        <div className="flex items-center gap-2 text-xs text-gray-600">
-                            <Phone className="w-3.5 h-3.5 text-gray-400" />
+                        <div className="flex items-center gap-1.5 text-[10px] text-gray-600">
+                            <Phone className="w-3 h-3 text-gray-400 shrink-0" />
                             <span>{resident.phone}</span>
                         </div>
                     )}
                 </div>
               </td>
 
-              {/* ROLES (Tamaño SUPER REDUCIDO) */}
-              <td className="px-6 py-3 text-center">
-                <div className="flex flex-col gap-1 items-center justify-center">
+              {/* ROLES */}
+              <td className="px-3 py-1.5 text-center">
+                <div className="flex flex-col gap-0.5 items-center justify-center">
                     {resident.roles.map(role => (
-                        <span key={role} className={`text-[9px] px-2 py-[2px] rounded-md font-bold uppercase border tracking-wide ${
+                        <span key={role} className={`text-[9px] px-1.5 py-0.5 rounded font-semibold uppercase border ${
                             role === 'Propietario' 
-                                ? 'bg-purple-50 text-brand border-purple-200' // Morado Oscuro (Brand)
+                                ? 'bg-brand/5 text-brand border-brand/20'
                                 : role === 'Inquilino' 
-                                    ? 'bg-fuchsia-50 text-fuchsia-600 border-fuchsia-100' // Morado Lila/Fucsia
+                                    ? 'bg-fuchsia-50 text-fuchsia-600 border-fuchsia-100'
                                     : 'bg-gray-50 text-gray-500 border-gray-200'
                         }`}>
                             {role}
                         </span>
                     ))}
                     {resident.roles.length === 0 && (
-                        <span className="text-[9px] px-2 py-[2px] rounded-md bg-gray-50 text-gray-400 border border-gray-100">Sin Asignar</span>
+                        <span className="text-[9px] px-1.5 py-0.5 rounded bg-gray-50 text-gray-500 border border-gray-200">Sin asignar</span>
                     )}
                 </div>
               </td>
 
               {/* UNIDADES */}
-              <td className="px-6 py-3">
-                <div className="flex flex-col gap-2">
-                    {/* PROPIEDADES */}
+              <td className="px-3 py-1.5">
+                <div className="flex flex-col gap-0.5">
                     {resident.units_owned.map((unit, i) => (
-                        <div key={`owned-${i}`} className="flex flex-col">
-                            <span className="text-xs font-bold text-gray-800">{unit}</span>
-                        </div>
+                        <span key={`owned-${i}`} className="text-[12px] font-medium text-gray-800">{unit}</span>
                     ))}
-                    
-                    {/* ARRIENDOS */}
                     {resident.units_rented.map((unit, i) => (
-                        <div key={`rented-${i}`} className="flex flex-col">
-                            <span className="text-xs font-bold text-gray-800">{unit}</span>
-                        </div>
+                        <span key={`rented-${i}`} className="text-[12px] font-medium text-gray-800">{unit}</span>
                     ))}
-
                     {resident.units_owned.length === 0 && resident.units_rented.length === 0 && (
-                        <span className="text-[11px] text-gray-400 italic font-light">--</span>
+                        <span className="text-[10px] text-gray-500">—</span>
                     )}
                 </div>
               </td>
 
               {/* ACCIONES */}
-              <td className="px-6 py-3 text-right">
-                <div className="flex items-center justify-end gap-2">
-                    <Link 
-                        href={`/app/${condominiumId}/residents/${resident.id}`}
-                        className="p-2 text-gray-400 hover:text-brand hover:bg-purple-50 rounded-lg transition-colors border border-transparent hover:border-purple-100"
-                        title="Ver Ficha"
-                    >
-                        <Pencil className="w-4 h-4" />
-                    </Link>
-                </div>
+              <td className="px-3 py-1.5 text-right">
+                <Link 
+                  href={`/app/${condominiumId}/residents/${resident.id}`}
+                  className="inline-flex p-1.5 text-gray-400 hover:text-brand hover:bg-brand/5 rounded transition-colors"
+                  title="Ver Ficha"
+                >
+                  <Pencil className="w-3.5 h-3.5" />
+                </Link>
               </td>
 
             </tr>

@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { Tag, Droplets } from "lucide-react";
+import { Tag, Droplets, Package } from "lucide-react";
 import { listarCharges, getRubrosIngreso, getUnitsForCharges } from "./actions";
 import ChargesFilters from "./components/ChargesFilters";
 import ChargesTable from "./components/ChargesTable";
@@ -17,9 +17,13 @@ export default async function ChargesPage({ params, searchParams }: PageProps) {
   const resolvedSearch = await searchParams;
 
   const condominiumId = resolvedParams.id;
+
+  // Ahora respetamos el filtro de status desde la URL, por defecto pendiente
+  const statusFilter = resolvedSearch?.status || "pendiente";
+
   const filters = {
     period: resolvedSearch?.period,
-    status: "pendiente", // solo pendientes; los pagados ya no se listan
+    status: statusFilter,
     expenseItemId: resolvedSearch?.expenseItemId,
     unitId: resolvedSearch?.unitId,
     page: resolvedSearch?.page ? Number(resolvedSearch.page) : 1,
@@ -42,6 +46,13 @@ export default async function ChargesPage({ params, searchParams }: PageProps) {
           <h1 className="text-2xl font-semibold">Cuentas por Cobrar</h1>
           <p className="text-sm text-muted-foreground">Listado de cargos generados.</p>
         </div>
+        <Link
+          href={`/app/${condominiumId}/charges/batches`}
+          className="flex items-center gap-2 px-3 py-2 text-xs font-semibold border border-gray-200 rounded-md hover:bg-gray-50"
+        >
+          <Package size={14} />
+          Ver lotes
+        </Link>
       </div>
 
       <div className="flex flex-wrap items-center gap-2">
@@ -58,19 +69,26 @@ export default async function ChargesPage({ params, searchParams }: PageProps) {
           label="Cuota individual"
           className="inline-flex items-center gap-2 rounded-md bg-sky-500 text-white px-4 py-2 text-xs font-semibold shadow-sm hover:bg-sky-600"
         />
-        <button
-          type="button"
-          disabled
-          className="inline-flex items-center gap-2 rounded-md bg-purple-300 text-white px-4 py-2 text-xs font-semibold shadow-sm disabled:opacity-70"
-          title="Consumo de servicios (en desarrollo)"
+        <Link
+          href={`/app/${condominiumId}/charges/generate#servicios`}
+          className="inline-flex items-center gap-2 rounded-md bg-purple-600 text-white px-4 py-2 text-xs font-semibold shadow-sm hover:bg-purple-700"
         >
-          <Droplets size={14} /> Consumo de servicios
-        </button>
+          <Droplets size={14} /> Servicios básicos
+        </Link>
       </div>
 
-      <ChargesFilters expenseItems={expenseItemsOptions} units={unitsOptions} />
+      <ChargesFilters
+        expenseItems={expenseItemsOptions}
+        units={unitsOptions}
+        currentStatus={statusFilter}
+      />
 
       <ChargesTable charges={listado.charges} condominiumId={condominiumId} />
+
+      {/* Información de resultados */}
+      <div className="text-sm text-gray-500">
+        Mostrando {listado.charges.length} de {listado.count} cargos
+      </div>
     </div>
   );
 }

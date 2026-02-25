@@ -90,16 +90,20 @@ export async function GET(req: NextRequest, ctx: { params: ParamsArg }) {
   const Template = (await import("@/app/app/[id]/payables/components/EgressPdfTemplate")).default;
 
   const folio = egress.folio_eg ? egress.folio_eg.toString().padStart(4, "0") : "--";
+  const isVoided = egress.status === "anulado" || egress.status === "cancelado";
+
   const html = renderToStaticMarkup(
     React.createElement(Template, {
       condo: {
         name: condo?.name || "Condominio",
         logoUrl: condo?.logo_url,
         address: condo?.address || null,
-        ruc: condo?.fiscal_id || null, // Mapear fiscal_id a ruc
+        ruc: condo?.fiscal_id || null,
         phone: condo?.phone || null,
       },
-      edifikaLogoUrl: edifikaLogoBase64, // Pasar el logo como base64
+      edifikaLogoUrl: edifikaLogoBase64,
+      isVoided,
+      cancellationReason: egress.cancellation_reason || null,
       supplier: {
         name: egress.suppliers?.name || "Proveedor",
         ruc: egress.suppliers?.fiscal_id || "",

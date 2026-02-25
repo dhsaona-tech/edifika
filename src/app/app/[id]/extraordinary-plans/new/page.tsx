@@ -1,4 +1,4 @@
-import { getExpenseItemsPadre } from "../../budget/actions";
+import { getExpenseItemsExtraordinarios } from "../../budget/actions";
 import { getUnitsForDistribution } from "../../budget/actions";
 import NewExtraordinaryPlanForm from "../components/NewExtraordinaryPlanForm";
 import { Layers, ArrowLeft } from "lucide-react";
@@ -11,8 +11,9 @@ interface PageProps {
 export default async function NewExtraordinaryPlanPage({ params }: PageProps) {
   const { id } = await params;
 
+  // Usar rubros EXTRAORDINARIOS para proyectos, no ordinarios
   const [expenseItems, units] = await Promise.all([
-    getExpenseItemsPadre(id),
+    getExpenseItemsExtraordinarios(id),
     getUnitsForDistribution(id),
   ]);
 

@@ -31,8 +31,16 @@ export default async function ExpenseItemsPage({ params, searchParams }: PagePro
           </p>
         </div>
         <div className="flex items-center gap-2">
-          <RubroPadreForm condominiumId={condominiumId} categoriaForzada="gasto" />
-          <RubroPadreForm condominiumId={condominiumId} categoriaForzada="ingreso" />
+          <RubroPadreForm
+            condominiumId={condominiumId}
+            categoriaForzada="gasto"
+            contextoPresupuesto={contextoPresupuesto}
+          />
+          <RubroPadreForm
+            condominiumId={condominiumId}
+            categoriaForzada="ingreso"
+            contextoPresupuesto={contextoPresupuesto}
+          />
         </div>
       </div>
 

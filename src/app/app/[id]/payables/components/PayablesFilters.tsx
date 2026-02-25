@@ -70,10 +70,9 @@ export default function PayablesFilters({ suppliers, expenseItems }: Props) {
           onChange={(e) => handleChange("status", e.target.value || undefined)}
         >
           <option value="">Estado</option>
-          <option value="pendiente_pago">Pendiente de pago</option>
+          <option value="pendiente">Pendiente</option>
           <option value="parcialmente_pagado">Parcialmente pagado</option>
           <option value="pagado">Pagado</option>
-          <option value="borrador">Borrador</option>
           <option value="anulado">Anulado</option>
         </select>
         <select

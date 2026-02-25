@@ -22,11 +22,16 @@ export async function getLayoutData(condominiumId: string): Promise<LayoutData> 
   const { data: { user } } = await supabase.auth.getUser();
 
   if (!user) {
+    const monthNames = [
+      "ENERO", "FEBRERO", "MARZO", "ABRIL", "MAYO", "JUNIO",
+      "JULIO", "AGOSTO", "SEPTIEMBRE", "OCTUBRE", "NOVIEMBRE", "DICIEMBRE"
+    ];
+    const now = new Date();
     return {
       condominiumId,
       condominiumName: "Sin nombre",
       condominiumType: "",
-      currentMonth: new Date().toLocaleDateString('es-ES', { month: 'long', year: 'numeric' }),
+      currentMonth: `${monthNames[now.getMonth()]} ${now.getFullYear()}`,
       userName: "Usuario",
       userRole: "Usuario",
       userInitials: "U",
@@ -98,10 +103,13 @@ export async function getLayoutData(condominiumId: string): Promise<LayoutData> 
     userRole = "Guardia";
   }
 
-  const currentMonth = new Date().toLocaleDateString('es-ES', {
-    month: 'long',
-    year: 'numeric'
-  }).toUpperCase();
+  // Usar Intl.DateTimeFormat para consistencia entre server y client
+  const monthNames = [
+    "ENERO", "FEBRERO", "MARZO", "ABRIL", "MAYO", "JUNIO",
+    "JULIO", "AGOSTO", "SEPTIEMBRE", "OCTUBRE", "NOVIEMBRE", "DICIEMBRE"
+  ];
+  const now = new Date();
+  const currentMonth = `${monthNames[now.getMonth()]} ${now.getFullYear()}`;
 
   return {
     condominiumId,

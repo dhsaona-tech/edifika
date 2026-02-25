@@ -14,7 +14,7 @@ const AgreementSchema = z.object({
   unit_id: z.string().uuid("Selecciona una unidad"),
   charge_ids: z.array(z.string().uuid()).min(1, "Selecciona al menos un cargo"),
   down_payment: z.coerce.number().min(0).default(0),
-  installments: z.coerce.number().int().min(1).max(60, "Maximo 60 cuotas"),
+  installments: z.coerce.number().int().min(1).max(60, "Máximo 60 cuotas"),
   start_date: z.string().min(1, "Selecciona la fecha de inicio"),
   freeze_late_fees: z.boolean().default(true),
   notes: z.string().optional(),
@@ -97,7 +97,7 @@ export async function getUnitPendingCharges(condominiumId: string, unitId: strin
 
   const { data, error } = await supabase
     .from("charges")
-    .select("id, description, total_amount, balance, due_date, charge_type, expense_item:expense_items(name)")
+    .select("id, description, total_amount, balance, due_date, charge_type, expense_items(name)")
     .eq("condominium_id", condominiumId)
     .eq("unit_id", unitId)
     .eq("status", "pendiente")
@@ -109,7 +109,15 @@ export async function getUnitPendingCharges(condominiumId: string, unitId: strin
     return [];
   }
 
-  return data || [];
+  // Transformar expense_items de array/objeto a objeto simple
+  return (data || []).map((charge) => ({
+    ...charge,
+    expense_item: charge.expense_items
+      ? Array.isArray(charge.expense_items)
+        ? charge.expense_items[0] || null
+        : charge.expense_items
+      : null,
+  }));
 }
 
 export async function checkUnitHasActiveAgreement(
@@ -270,7 +278,7 @@ export async function createPaymentAgreement(
     dueDate.setMonth(dueDate.getMonth() + (i - 1));
     const dueDateStr = dueDate.toISOString().split("T")[0];
 
-    // Ajustar ultima cuota para cubrir diferencias de redondeo
+    // Ajustar última cuota para cubrir diferencias de redondeo
     const amount =
       i === data.installments
         ? remainingAfterDown - installmentAmount * (data.installments - 1)
@@ -307,7 +315,7 @@ export async function createPaymentAgreement(
 
   if (chargeInsertError) {
     console.error("Error creando cargos de cuotas", chargeInsertError);
-    // No fallar, el convenio ya se creo
+    // No fallar, el convenio ya se creó
   }
 
   // Vincular cargos con cuotas del convenio
@@ -323,7 +331,7 @@ export async function createPaymentAgreement(
 
   await supabase.from("payment_agreement_installments").insert(installmentRows);
 
-  // Si los cargos originales deben congelarse (no generar mas mora), marcarlos
+  // Si los cargos originales deben congelarse (no generar más mora), marcarlos
   if (data.freeze_late_fees) {
     await supabase
       .from("charges")
@@ -353,7 +361,7 @@ export async function cancelPaymentAgreement(
 ) {
   const supabase = await createClient();
 
-  // Verificar que el convenio existe y esta activo
+  // Verificar que el convenio existe y está activo
   const { data: agreement } = await supabase
     .from("payment_agreements")
     .select("status, unit_id")
@@ -444,7 +452,7 @@ export async function cancelPaymentAgreement(
 export async function markAgreementAsCompleted(condominiumId: string, agreementId: string) {
   const supabase = await createClient();
 
-  // Verificar que todas las cuotas estan pagadas
+  // Verificar que todas las cuotas están pagadas
   const { data: pendingInstallments } = await supabase
     .from("payment_agreement_installments")
     .select("id")
@@ -452,7 +460,7 @@ export async function markAgreementAsCompleted(condominiumId: string, agreementI
     .neq("status", "pagado");
 
   if (pendingInstallments && pendingInstallments.length > 0) {
-    return { error: "Aun hay cuotas pendientes de pago" };
+    return { error: "Aún hay cuotas pendientes de pago" };
   }
 
   const { error } = await supabase

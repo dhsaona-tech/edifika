@@ -12,7 +12,7 @@ import type {
 const PlanSchema = z.object({
   name: z.string().min(1, "El nombre es obligatorio"),
   description: z.string().optional(),
-  expense_item_id: z.string().uuid("Selecciona un rubro"),
+  expense_item_id: z.string().optional(), // Opcional si se crea nuevo rubro
   distribution_method: z.enum(["por_aliquota", "igualitario", "manual"]),
   total_amount: z.coerce.number().positive("El monto debe ser mayor a 0"),
   total_installments: z.coerce.number().int().min(1).max(60, "Maximo 60 cuotas"),
@@ -25,6 +25,9 @@ const PlanSchema = z.object({
       })
     )
     .optional(),
+  // Campos para crear nuevo rubro
+  create_new_rubro: z.boolean().optional(),
+  new_rubro_name: z.string().optional(),
 });
 
 export async function getExtraordinaryPlans(
@@ -56,10 +59,10 @@ export async function getExtraordinaryPlans(
 export async function getExtraordinaryPlanDetail(
   condominiumId: string,
   planId: string
-): Promise<{ plan: ExtraordinaryPlan; units: ExtraordinaryPlanUnit[] } | null> {
+): Promise<{ plan: ExtraordinaryPlan; units: ExtraordinaryPlanUnit[]; quotations: import("@/types/billing").ProjectQuotation[] } | null> {
   const supabase = await createClient();
 
-  const [planRes, unitsRes] = await Promise.all([
+  const [planRes, unitsRes, quotationsRes] = await Promise.all([
     supabase
       .from("extraordinary_plans")
       .select(`*, expense_item:expense_items(name)`)
@@ -70,6 +73,11 @@ export async function getExtraordinaryPlanDetail(
       .from("extraordinary_plan_units")
       .select(`*, unit:units(identifier, full_identifier)`)
       .eq("extraordinary_plan_id", planId),
+    supabase
+      .from("project_quotations")
+      .select("*")
+      .eq("extraordinary_plan_id", planId)
+      .order("created_at"),
   ]);
 
   if (planRes.error || !planRes.data) {
@@ -80,6 +88,7 @@ export async function getExtraordinaryPlanDetail(
   return {
     plan: planRes.data,
     units: unitsRes.data || [],
+    quotations: quotationsRes.data || [],
   };
 }
 
@@ -100,6 +109,45 @@ export async function createExtraordinaryPlan(
     data: { user },
   } = await supabase.auth.getUser();
 
+  let expenseItemId = data.expense_item_id;
+
+  // Si se debe crear un nuevo rubro
+  if (data.create_new_rubro && data.new_rubro_name) {
+    const rubroName = data.new_rubro_name.trim();
+    if (!rubroName) {
+      return { error: "El nombre del rubro es obligatorio" };
+    }
+
+    // Crear el rubro extraordinario primero
+    const { data: newRubro, error: rubroError } = await supabase
+      .from("expense_items")
+      .insert({
+        condominium_id: condominiumId,
+        name: rubroName,
+        description: `Rubro creado para proyecto: ${data.name}`,
+        category: "gasto",
+        classification: "extraordinario",
+        allocation_method: "aliquot",
+        parent_id: null,
+        is_active: true,
+        source: "project",
+      })
+      .select("id")
+      .single();
+
+    if (rubroError || !newRubro) {
+      console.error("Error creando rubro para proyecto", rubroError);
+      return { error: "No se pudo crear el rubro para el proyecto" };
+    }
+
+    expenseItemId = newRubro.id;
+  }
+
+  // Validar que tenemos un expense_item_id
+  if (!expenseItemId) {
+    return { error: "Selecciona un rubro existente o crea uno nuevo" };
+  }
+
   // Crear plan maestro
   const { data: plan, error: planError } = await supabase
     .from("extraordinary_plans")
@@ -107,7 +155,7 @@ export async function createExtraordinaryPlan(
       condominium_id: condominiumId,
       name: data.name,
       description: data.description || null,
-      expense_item_id: data.expense_item_id,
+      expense_item_id: expenseItemId,
       distribution_method: data.distribution_method,
       total_amount: data.total_amount,
       total_installments: data.total_installments,
@@ -121,6 +169,14 @@ export async function createExtraordinaryPlan(
   if (planError || !plan) {
     console.error("Error creando plan", planError);
     return { error: "No se pudo crear el plan extraordinario" };
+  }
+
+  // Si creamos un nuevo rubro, actualizar source_project_id
+  if (data.create_new_rubro && expenseItemId) {
+    await supabase
+      .from("expense_items")
+      .update({ source_project_id: plan.id })
+      .eq("id", expenseItemId);
   }
 
   // Si es distribucion manual, guardar montos por unidad
@@ -366,4 +422,175 @@ export async function cancelExtraordinaryPlan(
     success: true,
     charges_cancelled: chargesCancelados?.length || 0,
   };
+}
+
+// ============================================================================
+// COTIZACIONES
+// ============================================================================
+
+export async function uploadQuotation(
+  condominiumId: string,
+  planId: string,
+  formData: FormData
+) {
+  const supabase = await createClient();
+
+  const file = formData.get("file") as File;
+  const isWinner = formData.get("is_winner") === "true";
+  const notes = formData.get("notes") as string;
+
+  if (!file || !file.name) {
+    return { error: "Selecciona un archivo PDF" };
+  }
+
+  // Verificar que sea PDF
+  if (!file.type.includes("pdf")) {
+    return { error: "Solo se permiten archivos PDF" };
+  }
+
+  // Verificar tamano (max 10MB)
+  if (file.size > 10 * 1024 * 1024) {
+    return { error: "El archivo no puede superar 10MB" };
+  }
+
+  // Verificar que no hay mas de 4 cotizaciones
+  const { count } = await supabase
+    .from("project_quotations")
+    .select("id", { count: "exact", head: true })
+    .eq("extraordinary_plan_id", planId);
+
+  if ((count || 0) >= 4) {
+    return { error: "Maximo 4 cotizaciones por proyecto" };
+  }
+
+  // Subir archivo al storage
+  const fileName = `${planId}/${Date.now()}_${file.name}`;
+  const { data: uploadData, error: uploadError } = await supabase.storage
+    .from("quotations")
+    .upload(fileName, file);
+
+  if (uploadError) {
+    console.error("Error subiendo archivo", uploadError);
+    return { error: "No se pudo subir el archivo" };
+  }
+
+  // Si es winner, quitar flag de otros
+  if (isWinner) {
+    await supabase
+      .from("project_quotations")
+      .update({ is_winner: false })
+      .eq("extraordinary_plan_id", planId);
+  }
+
+  // Insertar registro
+  const { error: insertError } = await supabase.from("project_quotations").insert({
+    extraordinary_plan_id: planId,
+    file_path: uploadData.path,
+    file_name: file.name,
+    is_winner: isWinner,
+    notes: notes || null,
+  });
+
+  if (insertError) {
+    console.error("Error guardando cotizacion", insertError);
+    // Intentar borrar archivo subido
+    await supabase.storage.from("quotations").remove([uploadData.path]);
+    return { error: "No se pudo guardar la cotizacion" };
+  }
+
+  revalidatePath(`/app/${condominiumId}/extraordinary-plans/${planId}`);
+  return { success: true };
+}
+
+export async function deleteQuotation(
+  condominiumId: string,
+  planId: string,
+  quotationId: string
+) {
+  const supabase = await createClient();
+
+  // Obtener cotizacion
+  const { data: quotation } = await supabase
+    .from("project_quotations")
+    .select("file_path")
+    .eq("id", quotationId)
+    .eq("extraordinary_plan_id", planId)
+    .maybeSingle();
+
+  if (!quotation) {
+    return { error: "Cotizacion no encontrada" };
+  }
+
+  // Eliminar archivo del storage
+  await supabase.storage.from("quotations").remove([quotation.file_path]);
+
+  // Eliminar registro
+  const { error } = await supabase
+    .from("project_quotations")
+    .delete()
+    .eq("id", quotationId);
+
+  if (error) {
+    console.error("Error eliminando cotizacion", error);
+    return { error: "No se pudo eliminar la cotizacion" };
+  }
+
+  revalidatePath(`/app/${condominiumId}/extraordinary-plans/${planId}`);
+  return { success: true };
+}
+
+export async function setWinnerQuotation(
+  condominiumId: string,
+  planId: string,
+  quotationId: string
+) {
+  const supabase = await createClient();
+
+  // Quitar flag de todos
+  await supabase
+    .from("project_quotations")
+    .update({ is_winner: false })
+    .eq("extraordinary_plan_id", planId);
+
+  // Poner flag al seleccionado
+  const { error } = await supabase
+    .from("project_quotations")
+    .update({ is_winner: true })
+    .eq("id", quotationId)
+    .eq("extraordinary_plan_id", planId);
+
+  if (error) {
+    console.error("Error marcando ganadora", error);
+    return { error: "No se pudo marcar como ganadora" };
+  }
+
+  revalidatePath(`/app/${condominiumId}/extraordinary-plans/${planId}`);
+  return { success: true };
+}
+
+export async function getQuotationUrl(filePath: string): Promise<string | null> {
+  const supabase = await createClient();
+
+  const { data } = await supabase.storage
+    .from("quotations")
+    .createSignedUrl(filePath, 60 * 5); // 5 minutos
+
+  return data?.signedUrl || null;
+}
+
+export async function getQuotations(planId: string) {
+  const supabase = await createClient();
+
+  const { data, error } = await supabase
+    .from("project_quotations")
+    .select("*")
+    .eq("extraordinary_plan_id", planId)
+    .order("created_at");
+
+  if (error) {
+    console.error("Error obteniendo cotizaciones", error);
+    return [];
+  }
+
+  return data || [];
 }

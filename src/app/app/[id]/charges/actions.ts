@@ -1,10 +1,12 @@
 "use server";
 
 import { createClient } from "@/lib/supabase/server";
+import { logAudit } from "@/lib/audit/logAudit";
 import { revalidatePath } from "next/cache";
 import { z } from "zod";
-import { Charge, ChargeBatchType, ChargeType, UnitChargePreview } from "@/types/charges";
+import { Charge, ChargeBatch, ChargeBatchType, ChargeType, UnitChargePreview } from "@/types/charges";
 import { distribuir } from "@/lib/charges/calculations";
+import { getBillingSettings } from "../billing-settings/actions";
 
 const BatchInputSchema = z.object({
   type: z.enum(["expensas_mensuales", "servicio_basico", "extraordinaria_masiva", "saldo_inicial"]),
@@ -200,18 +202,22 @@ export async function crearBatchYCharges(condominiumId: string, payload: unknown
   const supabase = await createClient();
 
   // Evitar duplicar cargos del mismo rubro y periodo (por ejemplo expensas del mismo mes)
+  // Excluir eliminados Y cancelados para que el periodo se rehabilite al eliminar
   const { data: existentes } = await supabase
     .from("charges")
     .select("id, status")
     .eq("condominium_id", condominiumId)
     .eq("expense_item_id", data.expense_item_id)
     .eq("period", data.period)
-    .neq("status", "cancelado")
+    .not("status", "in", '("eliminado","cancelado")')
     .limit(1);
 
   if (existentes && existentes.length > 0) {
-    return { error: "Ya existen cargos generados para este rubro y periodo. Anula o borra los existentes antes de volver a crear." };
+    return { error: "Ya existen cargos generados para este rubro y periodo. Elimina los existentes antes de volver a crear." };
   }
+
+  // Obtener configuración de pronto pago
+  const billingSettings = await getBillingSettings(condominiumId);
 
   const { data: batch, error: batchError } = await supabase
     .from("charge_batches")
@@ -223,6 +229,7 @@ export async function crearBatchYCharges(condominiumId: string, payload: unknown
       posted_date: data.posted_date,
       due_date: data.due_date,
       description: data.description || null,
+      status: "activo",
     })
     .select("id")
     .single();
@@ -239,6 +246,10 @@ export async function crearBatchYCharges(condominiumId: string, payload: unknown
       const det = (u.detail || "").trim();
       const description =
         det && det !== base ? `${base ? `${base} - ` : ""}${det}` : base || det || null;
+
+      // Calcular pronto pago para este cargo
+      const prontoPago = calcularProntoPago(billingSettings, data.period, u.amount);
+
       return {
         condominium_id: condominiumId,
         unit_id: u.unit_id,
@@ -253,6 +264,10 @@ export async function crearBatchYCharges(condominiumId: string, payload: unknown
         charge_type: data.charge_type as ChargeType,
         description,
         batch_id: batch.id,
+        // Campos de pronto pago
+        early_payment_eligible: prontoPago.early_payment_eligible,
+        early_payment_amount: prontoPago.early_payment_amount,
+        early_payment_deadline: prontoPago.early_payment_deadline,
       };
     });
 
@@ -265,6 +280,7 @@ export async function crearBatchYCharges(condominiumId: string, payload: unknown
   }
 
   revalidatePath(`/app/${condominiumId}/charges`);
+  revalidatePath(`/app/${condominiumId}/charges/batches`);
   return {
     success: true,
     batchId: batch.id,
@@ -384,12 +400,13 @@ export async function anularCargo(condominiumId: string, chargeId: string, reaso
 
   if (error) return { error: "No se pudo anular el cargo." };
 
-  await supabase.from("audit_logs").insert({
-    entity: "charge",
-    entity_id: chargeId,
-    action: "cancel",
-    performed_by: cancelledByProfileId,
-    data: { reason },
+  logAudit({
+    condominiumId,
+    tableName: "charges",
+    recordId: chargeId,
+    action: "ANULACION",
+    newValues: { reason },
+    performedBy: cancelledByProfileId,
   });
 
   revalidatePath(`/app/${condominiumId}/charges`);
@@ -494,13 +511,276 @@ export async function actualizarCargoLigero(
 
   if (error) return { error: "No se pudo actualizar el cargo." };
 
-  await supabase.from("audit_logs").insert({
-    entity: "charge",
-    entity_id: chargeId,
-    action: "update",
-    data: updatePayload,
+  logAudit({
+    condominiumId,
+    tableName: "charges",
+    recordId: chargeId,
+    action: "UPDATE",
+    newValues: updatePayload,
   });
 
   revalidatePath(`/app/${condominiumId}/charges`);
   return { success: true };
+}
+
+// ============================================================================
+// CONTROL DE PERIODOS
+// ============================================================================
+
+/**
+ * Obtiene los periodos que ya tienen cargos activos para un rubro específico
+ * Esto permite ocultar esos periodos en el wizard de generación
+ */
+export async function getPeriodosGenerados(
+  condominiumId: string,
+  expenseItemId?: string
+): Promise<string[]> {
+  const supabase = await createClient();
+
+  let query = supabase
+    .from("charges")
+    .select("period")
+    .eq("condominium_id", condominiumId)
+    .not("status", "in", '("eliminado","cancelado")')
+    .not("period", "is", null);
+
+  if (expenseItemId) {
+    query = query.eq("expense_item_id", expenseItemId);
+  }
+
+  const { data, error } = await query;
+  if (error) {
+    console.error("Error obteniendo periodos generados", error);
+    return [];
+  }
+
+  // Extraer periodos únicos
+  const periodos = new Set<string>();
+  (data || []).forEach((row: { period: string | null }) => {
+    if (row.period) periodos.add(row.period);
+  });
+
+  return Array.from(periodos).sort().reverse();
+}
+
+// ============================================================================
+// GESTIÓN DE LOTES (BATCHES)
+// ============================================================================
+
+/**
+ * Lista todos los lotes de cargos del condominio
+ */
+export async function listarBatches(
+  condominiumId: string,
+  filters?: { status?: string; type?: string }
+): Promise<ChargeBatch[]> {
+  const supabase = await createClient();
+
+  let query = supabase
+    .from("charge_batches")
+    .select(`
+      *,
+      expense_item:expense_items(name)
+    `)
+    .eq("condominium_id", condominiumId)
+    .order("created_at", { ascending: false });
+
+  if (filters?.status && filters.status !== "todos") {
+    query = query.eq("status", filters.status);
+  } else {
+    // Por defecto mostrar solo activos
+    query = query.eq("status", "activo");
+  }
+
+  if (filters?.type && filters.type !== "todos") {
+    query = query.eq("type", filters.type);
+  }
+
+  const { data, error } = await query;
+  if (error) {
+    console.error("Error listando batches", error);
+    return [];
+  }
+
+  return (data || []) as ChargeBatch[];
+}
+
+/**
+ * Obtiene detalle de un lote específico con sus cargos
+ */
+export async function getBatchDetail(condominiumId: string, batchId: string) {
+  const supabase = await createClient();
+
+  const { data: batch, error: batchError } = await supabase
+    .from("charge_batches")
+    .select(`
+      *,
+      expense_item:expense_items(name)
+    `)
+    .eq("id", batchId)
+    .eq("condominium_id", condominiumId)
+    .single();
+
+  if (batchError || !batch) {
+    return null;
+  }
+
+  const { data: charges } = await supabase
+    .from("charges")
+    .select(`
+      id, unit_id, total_amount, paid_amount, balance, status,
+      unit:units(identifier, full_identifier)
+    `)
+    .eq("batch_id", batchId)
+    .order("created_at");
+
+  return {
+    batch,
+    charges: charges || [],
+  };
+}
+
+/**
+ * Elimina un lote completo (cascada soft-delete)
+ * Solo si ningún cargo tiene pagos asociados
+ */
+export async function eliminarLoteCompleto(
+  condominiumId: string,
+  batchId: string,
+  reason?: string
+) {
+  const supabase = await createClient();
+
+  // 1. Verificar que el lote existe y pertenece al condominio
+  const { data: batch } = await supabase
+    .from("charge_batches")
+    .select("id, status")
+    .eq("id", batchId)
+    .eq("condominium_id", condominiumId)
+    .single();
+
+  if (!batch) {
+    return { error: "Lote no encontrado." };
+  }
+
+  if (batch.status === "eliminado") {
+    return { error: "Este lote ya fue eliminado." };
+  }
+
+  // 2. Obtener todos los cargos del lote
+  const { data: cargos } = await supabase
+    .from("charges")
+    .select("id")
+    .eq("batch_id", batchId)
+    .not("status", "in", '("eliminado","cancelado")');
+
+  const chargeIds = (cargos || []).map((c: { id: string }) => c.id);
+
+  if (chargeIds.length === 0) {
+    // Solo marcar el batch como eliminado
+    await supabase
+      .from("charge_batches")
+      .update({
+        status: "eliminado",
+        deleted_at: new Date().toISOString(),
+      })
+      .eq("id", batchId)
+      .eq("condominium_id", condominiumId);
+
+    revalidatePath(`/app/${condominiumId}/charges`);
+    revalidatePath(`/app/${condominiumId}/charges/batches`);
+    return { success: true, eliminados: 0 };
+  }
+
+  // 3. Verificar que ningún cargo tenga pagos asociados
+  const { data: conPagos } = await supabase
+    .from("payment_allocations")
+    .select("charge_id")
+    .in("charge_id", chargeIds);
+
+  const idsConPago = (conPagos || []).map((r: { charge_id: string }) => r.charge_id);
+
+  if (idsConPago.length > 0) {
+    return {
+      error: `No se puede eliminar el lote porque ${idsConPago.length} cargo(s) tienen pagos asociados. Anula los pagos primero.`,
+      cargosConPago: idsConPago.length,
+    };
+  }
+
+  // 4. Eliminar (soft-delete) todos los cargos del lote
+  await supabase
+    .from("charges")
+    .update({
+      status: "eliminado",
+      cancellation_reason: reason || "Eliminado con lote completo",
+      cancelled_at: new Date().toISOString(),
+    })
+    .in("id", chargeIds)
+    .eq("condominium_id", condominiumId);
+
+  // 5. Marcar el batch como eliminado
+  await supabase
+    .from("charge_batches")
+    .update({
+      status: "eliminado",
+      deleted_at: new Date().toISOString(),
+    })
+    .eq("id", batchId)
+    .eq("condominium_id", condominiumId);
+
+  revalidatePath(`/app/${condominiumId}/charges`);
+  revalidatePath(`/app/${condominiumId}/charges/batches`);
+
+  return {
+    success: true,
+    eliminados: chargeIds.length,
+  };
+}
+
+// ============================================================================
+// CONFIGURACIÓN DE PRONTO PAGO AL GENERAR CARGOS
+// ============================================================================
+
+/**
+ * Calcula los campos de pronto pago para un cargo basado en la configuración
+ */
+function calcularProntoPago(
+  billingSettings: {
+    early_payment_enabled?: boolean;
+    early_payment_type?: string | null;
+    early_payment_value?: number;
+    early_payment_cutoff_day?: number | null;
+  } | null,
+  period: string,
+  totalAmount: number
+): {
+  early_payment_eligible: boolean;
+  early_payment_amount: number;
+  early_payment_deadline: string | null;
+} {
+  if (!billingSettings?.early_payment_enabled || !billingSettings.early_payment_cutoff_day) {
+    return {
+      early_payment_eligible: false,
+      early_payment_amount: 0,
+      early_payment_deadline: null,
+    };
+  }
+
+  // period viene como YYYY-MM-01
+  const [year, month] = period.split("-").map(Number);
+  const cutoffDay = billingSettings.early_payment_cutoff_day;
+  const deadline = `${year}-${String(month).padStart(2, "0")}-${String(cutoffDay).padStart(2, "0")}`;
+
+  let discountAmount = 0;
+  if (billingSettings.early_payment_type === "porcentaje") {
+    discountAmount = totalAmount * ((billingSettings.early_payment_value || 0) / 100);
+  } else {
+    discountAmount = billingSettings.early_payment_value || 0;
+  }
+
+  return {
+    early_payment_eligible: true,
+    early_payment_amount: Math.round(discountAmount * 100) / 100,
+    early_payment_deadline: deadline,
+  };
 }

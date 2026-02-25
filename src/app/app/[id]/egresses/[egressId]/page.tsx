@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { formatCurrency } from "@/lib/utils";
 import { getEgressDetail } from "../actions";
+import CancelEgressButton from "../components/CancelEgressButton";
 
 type PageProps = { params: { id: string; egressId: string } | Promise<{ id: string; egressId: string }> };
 
@@ -49,6 +50,11 @@ export default async function EgressDetailPage({ params }: PageProps) {
           >
             {pdfButtonLabel}
           </Link>
+          <CancelEgressButton
+            condominiumId={condominiumId}
+            egressId={egressId}
+            status={egress.status}
+          />
         </div>
       </div>
 

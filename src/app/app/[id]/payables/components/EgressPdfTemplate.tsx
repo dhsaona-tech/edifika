@@ -9,6 +9,8 @@ type Allocation = {
 type Props = {
   condo: { name: string; logoUrl?: string | null; address?: string | null; ruc?: string | null; phone?: string | null };
   edifikaLogoUrl?: string | null;
+  isVoided?: boolean;
+  cancellationReason?: string | null;
   supplier: {
     name: string;
     ruc?: string | null;
@@ -29,7 +31,7 @@ type Props = {
   allocations: Allocation[];
 };
 
-export default function EgressPdfTemplate({ condo, edifikaLogoUrl, supplier, egress, allocations }: Props) {
+export default function EgressPdfTemplate({ condo, edifikaLogoUrl, isVoided = false, cancellationReason, supplier, egress, allocations }: Props) {
   return (
     <html>
       <head>
@@ -58,10 +60,28 @@ export default function EgressPdfTemplate({ condo, edifikaLogoUrl, supplier, egr
           .footer-right { display: flex; align-items: center; gap: 12px; }
           .edifika-logo { height: 50px; width: auto; max-width: 200px; object-fit: contain; }
           .condo-info { font-size: 9px; color: #64748b; line-height: 1.4; }
+          .watermark { position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%) rotate(-35deg); font-size: 100px; font-weight: 900; color: rgba(249, 115, 22, 0.15); pointer-events: none; z-index: 1000; white-space: nowrap; letter-spacing: 10px; }
+          .voided-banner { background: linear-gradient(135deg, #fff7ed 0%, #ffedd5 100%); border: 2px solid #f97316; border-radius: 8px; padding: 8px 16px; margin-bottom: 16px; display: flex; align-items: center; gap: 12px; }
+          .voided-banner svg { width: 24px; height: 24px; color: #ea580c; flex-shrink: 0; }
+          .voided-banner-text { font-size: 11px; color: #9a3412; }
+          .voided-banner-text strong { font-size: 13px; display: block; margin-bottom: 2px; }
         `}</style>
       </head>
       <body>
+        {isVoided && <div className="watermark">ANULADO</div>}
         <div className="container">
+          {isVoided && (
+            <div className="voided-banner">
+              <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+              </svg>
+              <div className="voided-banner-text">
+                <strong>DOCUMENTO ANULADO</strong>
+                Este comprobante ha sido anulado y no tiene validez contable. Se conserva para mantener la secuencia de folios.
+                {cancellationReason && <><br />Motivo: {cancellationReason}</>}
+              </div>
+            </div>
+          )}
           <div className="header">
             <div>
               {condo.logoUrl ? (
@@ -78,6 +98,11 @@ export default function EgressPdfTemplate({ condo, edifikaLogoUrl, supplier, egr
             </div>
             <div className="title">
               <h1>COMPROBANTE DE EGRESO</h1>
+              {isVoided && (
+                <div style={{ marginTop: 6, padding: "6px 10px", display: "inline-flex", border: "1px solid #f97316", color: "#c2410c", background: "#ffedd5", borderRadius: 8, fontWeight: 800, fontSize: 12 }}>
+                  ANULADO
+                </div>
+              )}
             </div>
             <div className="codes">
               <div className="badge">EG #{egress.folio}</div>

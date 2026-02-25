@@ -8,6 +8,7 @@ import {
   ContextoPresupuestoDetallado,
   Rubro,
   RubroConSubrubros,
+  RubroSource,
 } from "@/types/expense-items";
 
 const RubroPadreSchema = z.object({
@@ -172,6 +173,28 @@ export async function getRubrosPorCategoria(
   }));
 }
 
+/**
+ * Verifica si hay un presupuesto detallado activo
+ */
+export async function hayPresupuestoDetalladoActivo(condominiumId: string): Promise<boolean> {
+  const supabase = await createClient();
+  const { data: condo } = await supabase
+    .from("condominiums")
+    .select("active_budget_master_id")
+    .eq("id", condominiumId)
+    .single();
+
+  if (!condo?.active_budget_master_id) return false;
+
+  const { data: budget } = await supabase
+    .from("budgets_master")
+    .select("budget_type")
+    .eq("id", condo.active_budget_master_id)
+    .maybeSingle();
+
+  return budget?.budget_type === "detallado";
+}
+
 export async function crearRubroPadre(condominiumId: string, formData: FormData) {
   const categoryRaw = String(formData.get("category") || "").toLowerCase();
   const classificationRaw = String(formData.get("classification") || "").toLowerCase();
@@ -200,6 +223,32 @@ export async function crearRubroPadre(condominiumId: string, formData: FormData)
   const payload = parsed.data;
 
   const supabase = await createClient();
+
+  // NUEVA VALIDACIÓN: Si hay presupuesto detallado activo y es gasto ordinario, bloquear
+  if (payload.category === "gasto" && payload.classification === "ordinario") {
+    const tienePresupuestoActivo = await hayPresupuestoDetalladoActivo(condominiumId);
+    if (tienePresupuestoActivo) {
+      return {
+        error:
+          "Los rubros de gasto ordinario se heredan automáticamente del presupuesto. Si necesitas agregar un gasto no contemplado en el presupuesto, créalo como extraordinario.",
+      };
+    }
+  }
+
+  // VALIDACIÓN: Unicidad de nombre dentro del mismo condominio, categoría y nivel padre
+  const { data: duplicado } = await supabase
+    .from("expense_items")
+    .select("id")
+    .eq("condominium_id", condominiumId)
+    .eq("category", payload.category)
+    .ilike("name", payload.name)
+    .is("parent_id", null)
+    .limit(1);
+
+  if ((duplicado || []).length > 0) {
+    return { error: `Ya existe un rubro "${payload.name}" en esta categoría.` };
+  }
+
   const { error } = await supabase.from("expense_items").insert({
     condominium_id: condominiumId,
     name: payload.name,
@@ -209,6 +258,7 @@ export async function crearRubroPadre(condominiumId: string, formData: FormData)
     allocation_method: "aliquot",
     parent_id: null,
     is_active: payload.is_active,
+    source: "manual" as RubroSource,
   });
 
   if (error) {
@@ -253,6 +303,35 @@ export async function actualizarRubroPadre(
 
   if (!existente) return { error: "Rubro no encontrado" };
 
+  // VALIDACIÓN: Si es gasto ordinario en presupuesto activo, no permitir desactivar
+  if (
+    !parsed.data.is_active &&
+    existente.category === "gasto" &&
+    existente.classification === "ordinario"
+  ) {
+    const { data: condo } = await supabase
+      .from("condominiums")
+      .select("active_budget_master_id")
+      .eq("id", condominiumId)
+      .single();
+
+    if (condo?.active_budget_master_id) {
+      const { data: enPresupuesto } = await supabase
+        .from("budgets")
+        .select("id")
+        .eq("budgets_master_id", condo.active_budget_master_id)
+        .eq("expense_item_id", rubroId)
+        .limit(1);
+
+      if ((enPresupuesto || []).length > 0) {
+        return {
+          error:
+            "No puedes desactivar un rubro de gasto ordinario que está en el presupuesto activo. Edítalo desde Presupuesto.",
+        };
+      }
+    }
+  }
+
   const { error } = await supabase
     .from("expense_items")
     .update({
@@ -296,6 +375,19 @@ export async function crearSubrubro(condominiumId: string, formData: FormData) {
   }
   if (padre.parent_id) {
     return { error: "Solo puedes elegir rubros padre como contenedor." };
+  }
+
+  // VALIDACIÓN: Unicidad de nombre dentro del mismo rubro padre
+  const { data: duplicado } = await supabase
+    .from("expense_items")
+    .select("id")
+    .eq("condominium_id", condominiumId)
+    .eq("parent_id", padre.id)
+    .ilike("name", parsed.data.name)
+    .limit(1);
+
+  if ((duplicado || []).length > 0) {
+    return { error: `Ya existe un subrubro "${parsed.data.name}" en este rubro.` };
   }
 
   const { error } = await supabase.from("expense_items").insert({
@@ -375,6 +467,62 @@ export async function cambiarEstadoRubro(
   nuevoEstado: boolean
 ) {
   const supabase = await createClient();
+
+  // Obtener datos del rubro para validaciones
+  const { data: rubro } = await supabase
+    .from("expense_items")
+    .select("id, parent_id, category, classification")
+    .eq("id", rubroId)
+    .eq("condominium_id", condominiumId)
+    .maybeSingle();
+
+  if (!rubro) return { error: "Rubro no encontrado." };
+
+  // VALIDACIÓN: Si se desactiva un gasto ordinario en presupuesto activo, bloquear
+  if (!nuevoEstado && rubro.category === "gasto" && rubro.classification === "ordinario") {
+    const { data: condo } = await supabase
+      .from("condominiums")
+      .select("active_budget_master_id")
+      .eq("id", condominiumId)
+      .single();
+
+    if (condo?.active_budget_master_id) {
+      // Verificar si este rubro (o su padre) está en el presupuesto
+      const idToCheck = rubro.parent_id || rubro.id;
+      const { data: enPresupuesto } = await supabase
+        .from("budgets")
+        .select("id")
+        .eq("budgets_master_id", condo.active_budget_master_id)
+        .eq("expense_item_id", idToCheck)
+        .limit(1);
+
+      if ((enPresupuesto || []).length > 0) {
+        return {
+          error:
+            "No puedes desactivar un rubro vinculado al presupuesto activo. Edítalo desde Presupuesto.",
+        };
+      }
+    }
+  }
+
+  // CASCADA: Si es rubro padre y se desactiva, desactivar también subrubros
+  if (!nuevoEstado && !rubro.parent_id) {
+    await supabase
+      .from("expense_items")
+      .update({ is_active: false })
+      .eq("parent_id", rubroId)
+      .eq("condominium_id", condominiumId);
+  }
+
+  // CASCADA: Si es rubro padre y se reactiva, reactivar también subrubros
+  if (nuevoEstado && !rubro.parent_id) {
+    await supabase
+      .from("expense_items")
+      .update({ is_active: true })
+      .eq("parent_id", rubroId)
+      .eq("condominium_id", condominiumId);
+  }
+
   const { error } = await supabase
     .from("expense_items")
     .update({ is_active: nuevoEstado })
@@ -383,7 +531,6 @@ export async function cambiarEstadoRubro(
 
   if (error) {
     console.error("No se pudo cambiar el estado del rubro", error);
-    // Exponer mas detalle para depurar RLS/permisos
     const isRls = error.code === "42501";
     return {
       error: isRls
@@ -400,120 +547,220 @@ export async function eliminarRubro(condominiumId: string, rubroId: string) {
   const supabase = await createClient();
   const { data: rubro, error: fetchError } = await supabase
     .from("expense_items")
-    .select("id, parent_id, category, classification")
+    .select("id, parent_id, category, classification, source, source_project_id")
     .eq("id", rubroId)
     .eq("condominium_id", condominiumId)
     .maybeSingle();
 
   if (fetchError || !rubro) return { error: "Rubro no encontrado." };
 
-  // ========== VERIFICAR HISTORIAL FINANCIERO ==========
-  // Un rubro con registros asociados NUNCA se puede eliminar
+  // Bloqueo basico: si es rubro padre de gasto ordinario presupuesta, no eliminar
+  if (!rubro.parent_id && rubro.category === "gasto" && rubro.classification === "ordinario") {
+    const { data: condo } = await supabase
+      .from("condominiums")
+      .select("active_budget_master_id")
+      .eq("id", condominiumId)
+      .single();
 
-  // 1. Verificar si tiene cargos asociados
-  const { data: cargosAsociados } = await supabase
-    .from("charges")
-    .select("id")
-    .eq("expense_item_id", rubroId)
-    .eq("condominium_id", condominiumId)
-    .limit(1);
+    if (condo?.active_budget_master_id) {
+      const { data: budgetMaster } = await supabase
+        .from("budgets_master")
+        .select("id, budget_type")
+        .eq("id", condo.active_budget_master_id)
+        .maybeSingle();
 
-  if (cargosAsociados && cargosAsociados.length > 0) {
-    return {
-      error: "Este rubro tiene cargos asociados. No se puede eliminar. Usa 'Desactivar' en su lugar.",
-    };
-  }
+      if (budgetMaster?.budget_type === "detallado") {
+        const { data: usoPresupuesto } = await supabase
+          .from("budgets")
+          .select("id")
+          .eq("budgets_master_id", budgetMaster.id)
+          .eq("expense_item_id", rubro.id)
+          .limit(1);
 
-  // 2. Verificar si tiene pagos asociados
-  const { data: pagosAsociados } = await supabase
-    .from("payments")
-    .select("id")
-    .eq("expense_item_id", rubroId)
-    .eq("condominium_id", condominiumId)
-    .limit(1);
-
-  if (pagosAsociados && pagosAsociados.length > 0) {
-    return {
-      error: "Este rubro tiene pagos asociados. No se puede eliminar. Usa 'Desactivar' en su lugar.",
-    };
-  }
-
-  // 3. Verificar si tiene líneas de presupuesto (cualquier presupuesto, no solo el activo)
-  const { data: presupuestosAsociados } = await supabase
-    .from("budgets")
-    .select("id")
-    .eq("expense_item_id", rubroId)
-    .eq("condominium_id", condominiumId)
-    .limit(1);
-
-  if (presupuestosAsociados && presupuestosAsociados.length > 0) {
-    return {
-      error: "Este rubro está en presupuestos. No se puede eliminar. Usa 'Desactivar' en su lugar.",
-    };
-  }
-
-  // 4. Verificar si tiene cuentas por pagar asociadas
-  const { data: opsAsociadas } = await supabase
-    .from("payable_orders")
-    .select("id")
-    .eq("expense_item_id", rubroId)
-    .eq("condominium_id", condominiumId)
-    .limit(1);
-
-  if (opsAsociadas && opsAsociadas.length > 0) {
-    return {
-      error: "Este rubro tiene órdenes de pago asociadas. No se puede eliminar. Usa 'Desactivar' en su lugar.",
-    };
-  }
-
-  // 5. Si es rubro padre, verificar si tiene subrubros con historial
-  if (!rubro.parent_id) {
-    const { data: subrubros } = await supabase
-      .from("expense_items")
-      .select("id")
-      .eq("parent_id", rubroId)
-      .eq("condominium_id", condominiumId);
-
-    for (const subrubro of subrubros || []) {
-      // Verificar cada subrubro por cargos
-      const { data: cargosSub } = await supabase
-        .from("charges")
-        .select("id")
-        .eq("expense_item_id", subrubro.id)
-        .eq("condominium_id", condominiumId)
-        .limit(1);
-
-      if (cargosSub && cargosSub.length > 0) {
-        return {
-          error: "Este rubro tiene subrubros con cargos asociados. No se puede eliminar. Desactívalo en su lugar.",
-        };
+        if ((usoPresupuesto || []).length > 0) {
+          return {
+            error:
+              "No puedes eliminar un rubro de gasto ordinario que esta en el presupuesto detallado activo. Editalo desde Presupuesto.",
+          };
+        }
       }
     }
   }
 
-  // ========== SOFT DELETE ==========
-  // En lugar de eliminar, desactivamos el rubro
+  // Verificar si el rubro tiene egresos asociados
+  const { data: egresosAsociados } = await supabase
+    .from("payable_orders")
+    .select("id")
+    .eq("expense_item_id", rubroId)
+    .limit(1);
 
+  if ((egresosAsociados || []).length > 0) {
+    return {
+      error: "No puedes eliminar este rubro porque tiene egresos asociados. Puedes desactivarlo en su lugar.",
+    };
+  }
+
+  // Verificar si el rubro tiene proyectos asociados (aparte del que lo creó)
+  const { data: proyectosAsociados } = await supabase
+    .from("extraordinary_plans")
+    .select("id")
+    .eq("expense_item_id", rubroId)
+    .neq("id", rubro.source_project_id || "")
+    .limit(1);
+
+  if ((proyectosAsociados || []).length > 0) {
+    return {
+      error: "No puedes eliminar este rubro porque tiene otros proyectos asociados.",
+    };
+  }
+
+  // SOFT DELETE: desactivar en lugar de eliminar físicamente
   // Si es padre, desactivar también los subrubros
   if (!rubro.parent_id) {
     await supabase
       .from("expense_items")
       .update({ is_active: false })
-      .eq("parent_id", rubroId)
+      .eq("parent_id", rubro.id)
       .eq("condominium_id", condominiumId);
   }
 
   const { error } = await supabase
     .from("expense_items")
     .update({ is_active: false })
-    .eq("id", rubroId)
+    .eq("id", rubro.id)
     .eq("condominium_id", condominiumId);
 
   if (error) {
-    console.error("No se pudo desactivar el rubro", error);
-    return { error: "Error al desactivar el rubro." };
+    console.error("No se pudo eliminar el rubro", error);
+    return { error: "Error al eliminar el rubro." };
   }
 
   revalidatePath(`/app/${condominiumId}/expense-items`);
-  return { success: true, message: "Rubro desactivado correctamente." };
+  return { success: true };
+}
+
+/**
+ * Obtiene rubros extraordinarios de gasto para usar en Proyectos
+ */
+export async function getRubrosExtraordinarios(condominiumId: string) {
+  const supabase = await createClient();
+  const { data, error } = await supabase
+    .from("expense_items")
+    .select("id, name, description")
+    .eq("condominium_id", condominiumId)
+    .eq("category", "gasto")
+    .eq("classification", "extraordinario")
+    .eq("is_active", true)
+    .is("parent_id", null)
+    .order("name");
+
+  if (error) {
+    console.error("Error obteniendo rubros extraordinarios", error);
+    return [];
+  }
+
+  return data || [];
+}
+
+/**
+ * Crea un rubro extraordinario desde un proyecto
+ */
+export async function crearRubroDesdeProyecto(
+  condominiumId: string,
+  projectId: string,
+  name: string,
+  description?: string | null
+) {
+  const supabase = await createClient();
+
+  const { data, error } = await supabase
+    .from("expense_items")
+    .insert({
+      condominium_id: condominiumId,
+      name,
+      description: description || null,
+      category: "gasto",
+      classification: "extraordinario",
+      allocation_method: "aliquot",
+      parent_id: null,
+      is_active: true,
+      source: "project" as RubroSource,
+      source_project_id: projectId,
+    })
+    .select("id, name")
+    .single();
+
+  if (error || !data) {
+    console.error("Error creando rubro desde proyecto", error);
+    return { error: "No se pudo crear el rubro para el proyecto." };
+  }
+
+  revalidatePath(`/app/${condominiumId}/expense-items`);
+  return { success: true, rubro: data };
+}
+
+/**
+ * Elimina un rubro que fue creado por un proyecto (solo si no tiene otros usos)
+ */
+export async function eliminarRubroDeProyecto(condominiumId: string, rubroId: string, projectId: string) {
+  const supabase = await createClient();
+
+  // Verificar que el rubro existe y fue creado por este proyecto
+  const { data: rubro } = await supabase
+    .from("expense_items")
+    .select("id, source, source_project_id")
+    .eq("id", rubroId)
+    .eq("condominium_id", condominiumId)
+    .maybeSingle();
+
+  if (!rubro) return { error: "Rubro no encontrado." };
+
+  // Si no fue creado por este proyecto, no eliminarlo
+  if (rubro.source !== "project" || rubro.source_project_id !== projectId) {
+    return { skipped: true, message: "Rubro no fue creado por este proyecto, se mantiene." };
+  }
+
+  // Verificar si tiene egresos
+  const { data: egresos } = await supabase
+    .from("payable_orders")
+    .select("id")
+    .eq("expense_item_id", rubroId)
+    .limit(1);
+
+  if ((egresos || []).length > 0) {
+    // No eliminar, solo desactivar
+    await supabase
+      .from("expense_items")
+      .update({ is_active: false })
+      .eq("id", rubroId);
+    return { success: true, message: "Rubro tiene egresos, se desactivó en lugar de eliminar." };
+  }
+
+  // Verificar si tiene otros proyectos
+  const { data: otrosProyectos } = await supabase
+    .from("extraordinary_plans")
+    .select("id")
+    .eq("expense_item_id", rubroId)
+    .neq("id", projectId)
+    .limit(1);
+
+  if ((otrosProyectos || []).length > 0) {
+    return { success: true, message: "Rubro usado por otros proyectos, se mantiene." };
+  }
+
+  // SOFT DELETE: desactivar subrubros y rubro
+  await supabase
+    .from("expense_items")
+    .update({ is_active: false })
+    .eq("parent_id", rubroId)
+    .eq("condominium_id", condominiumId);
+
+  await supabase
+    .from("expense_items")
+    .update({ is_active: false })
+    .eq("id", rubroId)
+    .eq("condominium_id", condominiumId);
+
+  revalidatePath(`/app/${condominiumId}/expense-items`);
+  return { success: true, message: "Rubro desactivado." };
 }

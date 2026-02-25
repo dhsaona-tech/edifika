@@ -9,6 +9,20 @@
     "lint": "eslint"
   },
   "dependencies": {
+    "@react-email/body": "^0.2.1",
+    "@react-email/button": "^0.2.1",
+    "@react-email/column": "^0.0.14",
+    "@react-email/components": "^1.0.8",
+    "@react-email/container": "^0.0.16",
+    "@react-email/head": "^0.0.13",
+    "@react-email/heading": "^0.0.16",
+    "@react-email/hr": "^0.0.12",
+    "@react-email/html": "^0.0.12",
+    "@react-email/img": "^0.0.12",
+    "@react-email/preview": "^0.0.14",
+    "@react-email/row": "^0.0.13",
+    "@react-email/section": "^0.0.17",
+    "@react-email/text": "^0.1.6",
     "@supabase/auth-js": "^2.87.1",
     "@supabase/ssr": "^0.7.0",
     "@supabase/supabase-js": "^2.84.0",
@@ -22,6 +36,7 @@
     "qrcode": "^1.5.4",
     "react": "19.2.0",
     "react-dom": "19.2.0",
+    "resend": "^6.9.2",
     "tailwind-merge": "^3.4.0",
     "use-debounce": "^10.0.6",
     "zod": "^4.1.12"

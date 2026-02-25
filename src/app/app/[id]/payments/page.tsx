@@ -67,6 +67,12 @@ export default async function PaymentsPage({ params, searchParams }: PageProps) 
         </div>
         <div className="flex gap-2">
           <Link
+            href={`/app/${condominiumId}/payments/unidentified`}
+            className="inline-flex items-center gap-2 rounded-md bg-amber-100 text-amber-800 px-4 py-2 text-xs font-semibold shadow-sm hover:bg-amber-200"
+          >
+            No identificados
+          </Link>
+          <Link
             href={`/app/${condominiumId}/payment-reports`}
             className="inline-flex items-center gap-2 rounded-md bg-slate-200 text-gray-800 px-4 py-2 text-xs font-semibold shadow-sm hover:bg-slate-300"
           >

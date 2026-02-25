@@ -2,6 +2,7 @@
 
 import { createClient } from "@/lib/supabase/server";
 import { getCurrentUser } from "@/lib/auth/getUser";
+import { logAudit } from "@/lib/audit/logAudit";
 import { revalidatePath } from "next/cache";
 import {
   ReconciliationInput,
@@ -615,6 +616,35 @@ export async function getReconciliation(
 }
 
 /**
+ * Verificar si hay conciliaciones pendientes (borradores) anteriores a una fecha
+ * REGLA 10.5: Continuidad de meses - no se puede abrir un mes si el anterior no está cerrado
+ */
+export async function checkPendingReconciliations(
+  condominiumId: string,
+  accountId: string,
+  cutoffDate: string
+): Promise<{ hasPending: boolean; pendingDate?: string }> {
+  const supabase = await createClient();
+
+  // Buscar conciliaciones en borrador para esta cuenta con fecha anterior a la solicitada
+  const { data: pendingRecons } = await supabase
+    .from("reconciliations")
+    .select("cutoff_date")
+    .eq("condominium_id", condominiumId)
+    .eq("financial_account_id", accountId)
+    .eq("status", "borrador")
+    .lt("cutoff_date", cutoffDate)
+    .order("cutoff_date", { ascending: false })
+    .limit(1);
+
+  if (pendingRecons && pendingRecons.length > 0) {
+    return { hasPending: true, pendingDate: pendingRecons[0].cutoff_date };
+  }
+
+  return { hasPending: false };
+}
+
+/**
  * Crear una nueva conciliación
  */
 export async function createReconciliation(
@@ -626,6 +656,20 @@ export async function createReconciliation(
   if (!user) return { error: "No autenticado" };
 
   const supabase = await createClient();
+
+  // REGLA 10.5: Verificar continuidad de meses
+  // No se puede crear conciliación de un mes si hay conciliaciones pendientes (borradores) anteriores
+  const { hasPending, pendingDate } = await checkPendingReconciliations(
+    condominiumId,
+    parsed.financial_account_id,
+    parsed.cutoff_date
+  );
+
+  if (hasPending) {
+    return {
+      error: `No se puede crear esta conciliación. Existe una conciliación pendiente (borrador) con fecha ${pendingDate}. Debe finalizarla o eliminarla primero.`
+    };
+  }
 
   // Obtener la última conciliación de esta cuenta para calcular el period_start
   const lastReconciliation = await getLastReconciliation(
@@ -1015,16 +1059,15 @@ export async function finalizeReconciliation(
     return { error: "No se pudo identificar el perfil del usuario para registrar quién finalizó la conciliación." };
   }
 
-  // Verificar si hay diferencia antes de finalizar
-  // Si hay diferencia, el estado debe ser "conciliada" pero se mostrará como "PENDIENTE" en la UI
-  // Si no hay diferencia, se marca como "conciliada" y se muestra como "CONCILIADO"
-  const { data: currentRecon } = await supabase
-    .from("reconciliations")
-    .select("difference")
-    .eq("id", reconciliationId)
-    .maybeSingle();
+  // REGLA 10.3: Solo se puede finalizar si la diferencia es $0.00
+  // El botón "Cerrar y Bloquear" solo se activa cuando Diferencia = $0.00
+  const hasDifference = Math.abs(reconciliation.difference || 0) >= 0.01;
 
-  const hasDifference = currentRecon ? Math.abs(currentRecon.difference) >= 0.01 : false;
+  if (hasDifference) {
+    return {
+      error: `No se puede cerrar la conciliación. La diferencia debe ser $0.00 (actualmente: $${Math.abs(reconciliation.difference || 0).toFixed(2)})`
+    };
+  }
 
   const { error } = await supabase
     .from("reconciliations")
@@ -1048,6 +1091,17 @@ export async function finalizeReconciliation(
     return { error: error?.message || "No se pudo finalizar la conciliación" };
   }
 
+  // Audit log: registrar finalización de conciliación (bloquea pagos/egresos)
+  logAudit({
+    condominiumId,
+    tableName: "reconciliations",
+    recordId: reconciliationId,
+    action: "CONCILIACION",
+    newValues: { status: "conciliada", difference: reconciliation.difference },
+    performedBy: reconciledByProfileId,
+    notes: "Conciliación finalizada — pagos y egresos del período quedan bloqueados",
+  });
+
   revalidatePath(`/app/${condominiumId}/reconciliation`);
   return { success: true };
 }
@@ -1068,6 +1122,56 @@ export async function getReconciliationItems(reconciliationId: string) {
   }
 
   return data || [];
+}
+
+/**
+ * Verificar si un pago está en una conciliación finalizada
+ * REGLA 10.5: Un ingreso marcado como "Conciliado" queda bloqueado
+ */
+export async function isPaymentReconciled(paymentId: string): Promise<boolean> {
+  const supabase = await createClient();
+
+  const { data, error } = await supabase
+    .from("reconciliation_items")
+    .select(`
+      id,
+      reconciliation:reconciliations!inner(status)
+    `)
+    .eq("payment_id", paymentId)
+    .eq("reconciliation.status", "conciliada")
+    .limit(1);
+
+  if (error) {
+    console.error("Error verificando si pago está conciliado:", error);
+    return false;
+  }
+
+  return (data && data.length > 0);
+}
+
+/**
+ * Verificar si un egreso está en una conciliación finalizada
+ * REGLA 10.5: Un egreso marcado como "Conciliado" queda bloqueado
+ */
+export async function isEgressReconciled(egressId: string): Promise<boolean> {
+  const supabase = await createClient();
+
+  const { data, error } = await supabase
+    .from("reconciliation_items")
+    .select(`
+      id,
+      reconciliation:reconciliations!inner(status)
+    `)
+    .eq("egress_id", egressId)
+    .eq("reconciliation.status", "conciliada")
+    .limit(1);
+
+  if (error) {
+    console.error("Error verificando si egreso está conciliado:", error);
+    return false;
+  }
+
+  return (data && data.length > 0);
 }
 
 /**
@@ -1096,6 +1200,17 @@ export async function deleteReconciliation(
 
   // Permitir eliminar cualquier conciliación (borrador, conciliada, etc.)
   // No hay restricción de estado
+
+  // Audit log ANTES de borrar (porque es hard delete y perdemos los datos)
+  logAudit({
+    condominiumId,
+    tableName: "reconciliations",
+    recordId: reconciliationId,
+    action: "DELETE",
+    oldValues: { status: reconciliation.status },
+    performedBy: user.id,
+    notes: `Eliminación de conciliación (estado previo: ${reconciliation.status})`,
+  });
 
   // Borrar (los items se borran en cascada)
   const { error } = await supabase

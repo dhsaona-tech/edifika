@@ -4,6 +4,7 @@ import { FormEvent, useMemo, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { formatCurrency } from "@/lib/utils";
 import DatePicker from "@/components/ui/DatePicker";
+import { documentTypeOptions, documentTypeLabels } from "@/lib/payables/schemas";
 
 type Option = { value: string; label: string };
 
@@ -11,11 +12,11 @@ type Props = {
   condominiumId: string;
   suppliers: (Option & { expenseItemId?: string | null })[];
   expenseItems: Option[];
-  nextFolio?: string;
   payableId?: string;
   defaults?: {
     supplier_id?: string | null;
     expense_item_id?: string | null;
+    document_type?: string | null;
     issue_date?: string | null;
     due_date?: string | null;
     invoice_number?: string | null;
@@ -26,13 +27,14 @@ type Props = {
   };
 };
 
-export default function RegisterPayableForm({ condominiumId, suppliers, expenseItems, nextFolio, payableId, defaults }: Props) {
+export default function RegisterPayableForm({ condominiumId, suppliers, expenseItems, payableId, defaults }: Props) {
   const router = useRouter();
   const [isPending, startTransition] = useTransition();
   const [message, setMessage] = useState<{ type: "error" | "success"; text: string } | null>(null);
 
   const [supplierId, setSupplierId] = useState<string>(defaults?.supplier_id || "");
   const [expenseItemId, setExpenseItemId] = useState<string>(defaults?.expense_item_id || "");
+  const [documentType, setDocumentType] = useState<string>(defaults?.document_type || "factura");
   const [issueDate, setIssueDate] = useState<string>(defaults?.issue_date || "");
   const [dueDate, setDueDate] = useState<string>(defaults?.due_date || "");
   const [invoiceNumber, setInvoiceNumber] = useState<string>(defaults?.invoice_number || "");
@@ -47,10 +49,21 @@ export default function RegisterPayableForm({ condominiumId, suppliers, expenseI
     return sup?.expenseItemId || "";
   }, [supplierId, suppliers]);
 
+  // Etiqueta dinámica para el número de documento
+  const documentNumberLabel = useMemo(() => {
+    switch (documentType) {
+      case "factura": return "Número de factura";
+      case "nota_de_venta": return "Número de nota de venta";
+      case "recibo": return "Número de recibo";
+      case "liquidacion": return "Número de liquidación";
+      default: return "Número de documento";
+    }
+  }, [documentType]);
+
   const handleSubmit = (e: FormEvent<HTMLFormElement>) => {
     e.preventDefault();
     if (file && file.type !== "application/pdf") {
-      setMessage({ type: "error", text: "Solo se permite PDF en la factura." });
+      setMessage({ type: "error", text: "Solo se permite PDF en el documento." });
       return;
     }
     if (!expenseItemId && !suggestedExpense) {
@@ -58,7 +71,7 @@ export default function RegisterPayableForm({ condominiumId, suppliers, expenseI
       return;
     }
     if (!issueDate || !dueDate) {
-      setMessage({ type: "error", text: "Selecciona fechas de emision y vencimiento." });
+      setMessage({ type: "error", text: "Selecciona fechas de emisión y vencimiento." });
       return;
     }
     if (amount <= 0) {
@@ -72,6 +85,7 @@ export default function RegisterPayableForm({ condominiumId, suppliers, expenseI
         general: {
           supplier_id: supplierId,
           expense_item_id: expenseItemId || suggestedExpense,
+          document_type: documentType,
           issue_date: issueDate,
           due_date: dueDate,
           total_amount: amount,
@@ -89,24 +103,27 @@ export default function RegisterPayableForm({ condominiumId, suppliers, expenseI
       const res = await fetch(endpoint, { method: "POST", body: form });
       const data = await res.json();
       if (!res.ok || data?.error) {
-        setMessage({ type: "error", text: data?.error || "No se pudo crear la OP." });
+        setMessage({ type: "error", text: data?.error || "No se pudo guardar." });
         return;
       }
-      setMessage({ type: "success", text: payableId ? "OP actualizada con exito." : "OP creada con exito." });
+      setMessage({ type: "success", text: payableId ? "Guardado correctamente." : "Cuenta por pagar creada." });
       setTimeout(() => router.push(`/app/${condominiumId}/payables`), 500);
     });
   };
 
   return (
-    <form onSubmit={handleSubmit} className="bg-white border border-gray-200 rounded-lg shadow-sm p-5 space-y-3">
+    <form onSubmit={handleSubmit} className="bg-white border border-gray-200 rounded-lg shadow-sm p-5 space-y-4">
       <div className="flex items-center justify-between">
         <div>
-          <p className="text-[11px] uppercase font-semibold text-gray-500">Nueva OP</p>
-          <h3 className="text-xl font-semibold text-gray-900">Cuenta por pagar</h3>
-          {nextFolio && <p className="text-xs text-gray-500">Proximo folio: {nextFolio}</p>}
+          <h3 className="text-xl font-semibold text-gray-900">
+            {payableId ? "Editar cuenta por pagar" : "Nueva cuenta por pagar"}
+          </h3>
+          <p className="text-sm text-gray-500">Registra una factura, nota de venta o recibo pendiente de pago.</p>
         </div>
       </div>
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+        {/* Proveedor */}
         <div className="space-y-2">
           <label className="text-xs font-semibold text-gray-700">Proveedor <span className="text-rose-500">*</span></label>
           <select
@@ -126,6 +143,8 @@ export default function RegisterPayableForm({ condominiumId, suppliers, expenseI
             ))}
           </select>
         </div>
+
+        {/* Rubro */}
         <div className="space-y-2">
           <label className="text-xs font-semibold text-gray-700">Rubro <span className="text-rose-500">*</span></label>
           <select
@@ -142,6 +161,49 @@ export default function RegisterPayableForm({ condominiumId, suppliers, expenseI
             ))}
           </select>
         </div>
+
+        {/* Tipo de documento */}
+        <div className="space-y-2">
+          <label className="text-xs font-semibold text-gray-700">Tipo de documento <span className="text-rose-500">*</span></label>
+          <select
+            required
+            value={documentType}
+            onChange={(e) => setDocumentType(e.target.value)}
+            className="w-full rounded-md border border-gray-200 px-3 py-2 text-sm shadow-sm focus:border-brand focus:ring-brand/20"
+          >
+            {documentTypeOptions.map((type) => (
+              <option key={type} value={type}>
+                {documentTypeLabels[type]}
+              </option>
+            ))}
+          </select>
+        </div>
+
+        {/* Número de documento */}
+        <div className="space-y-2">
+          <label className="text-xs font-semibold text-gray-700">{documentNumberLabel} <span className="text-rose-500">*</span></label>
+          <input
+            required
+            value={invoiceNumber}
+            onChange={(e) => setInvoiceNumber(e.target.value)}
+            className="w-full rounded-md border border-gray-200 px-3 py-2 text-sm shadow-sm focus:border-brand focus:ring-brand/20"
+            placeholder="Ej. 001-001-000123"
+          />
+        </div>
+
+        {/* Fecha de emisión */}
+        <div className="space-y-2">
+          <label className="text-xs font-semibold text-gray-700">Fecha de emisión <span className="text-rose-500">*</span></label>
+          <DatePicker required value={issueDate} onChange={setIssueDate} />
+        </div>
+
+        {/* Fecha de vencimiento */}
+        <div className="space-y-2">
+          <label className="text-xs font-semibold text-gray-700">Fecha de vencimiento <span className="text-rose-500">*</span></label>
+          <DatePicker required value={dueDate} onChange={setDueDate} />
+        </div>
+
+        {/* Monto */}
         <div className="space-y-2">
           <label className="text-xs font-semibold text-gray-700">Monto total <span className="text-rose-500">*</span></label>
           <input
@@ -155,28 +217,11 @@ export default function RegisterPayableForm({ condominiumId, suppliers, expenseI
           />
           <p className="text-[11px] text-gray-500">Total: {formatCurrency(amount || 0)}</p>
         </div>
+
+        {/* Forma de pago prevista */}
         <div className="space-y-2">
-          <label className="text-xs font-semibold text-gray-700">Fecha de emision <span className="text-rose-500">*</span></label>
-          <DatePicker required value={issueDate} onChange={setIssueDate} />
-        </div>
-        <div className="space-y-2">
-          <label className="text-xs font-semibold text-gray-700">Fecha de vencimiento <span className="text-rose-500">*</span></label>
-          <DatePicker required value={dueDate} onChange={setDueDate} />
-        </div>
-        <div className="space-y-2">
-          <label className="text-xs font-semibold text-gray-700">Numero de factura <span className="text-rose-500">*</span></label>
-          <input
-            required
-            value={invoiceNumber}
-            onChange={(e) => setInvoiceNumber(e.target.value)}
-            className="w-full rounded-md border border-gray-200 px-3 py-2 text-sm shadow-sm focus:border-brand focus:ring-brand/20"
-            placeholder="Ej. 001-001-000123"
-          />
-    </div>
-        <div className="space-y-2">
-          <label className="text-xs font-semibold text-gray-700">Forma de pago prevista <span className="text-rose-500">*</span></label>
+          <label className="text-xs font-semibold text-gray-700">Forma de pago prevista</label>
           <select
-            required
             value={plannedMethod}
             onChange={(e) => setPlannedMethod(e.target.value)}
             className="w-full rounded-md border border-gray-200 px-3 py-2 text-sm shadow-sm focus:border-brand focus:ring-brand/20"
@@ -187,42 +232,39 @@ export default function RegisterPayableForm({ condominiumId, suppliers, expenseI
             <option value="efectivo">Efectivo</option>
           </select>
         </div>
-        {plannedMethod === "cheque" && (
+
+        {/* Referencia prevista (solo para cheque/transferencia) */}
+        {(plannedMethod === "cheque" || plannedMethod === "transferencia") && (
           <div className="space-y-2">
-            <label className="text-xs font-semibold text-gray-700">Numero de cheque (previsto)</label>
+            <label className="text-xs font-semibold text-gray-700">
+              {plannedMethod === "cheque" ? "Número de cheque (previsto)" : "Número de orden (previsto)"}
+            </label>
             <input
               value={plannedRef}
               onChange={(e) => setPlannedRef(e.target.value)}
               className="w-full rounded-md border border-gray-200 px-3 py-2 text-sm shadow-sm focus:border-brand focus:ring-brand/20"
-              placeholder="Ej. 001234"
-            />
-          </div>
-        )}
-        {plannedMethod === "transferencia" && (
-          <div className="space-y-2">
-            <label className="text-xs font-semibold text-gray-700">Numero de orden (previsto)</label>
-            <input
-              value={plannedRef}
-              onChange={(e) => setPlannedRef(e.target.value)}
-              className="w-full rounded-md border border-gray-200 px-3 py-2 text-sm shadow-sm focus:border-brand focus:ring-brand/20"
-              placeholder="Ej. 00012345"
+              placeholder={plannedMethod === "cheque" ? "Ej. 001234" : "Ej. 00012345"}
             />
           </div>
         )}
       </div>
+
+      {/* Descripción */}
       <div className="space-y-2">
-          <label className="text-xs font-semibold text-gray-700">Detalle / justificacion <span className="text-rose-500">*</span></label>
+        <label className="text-xs font-semibold text-gray-700">Detalle / justificación <span className="text-rose-500">*</span></label>
         <textarea
-        value={description}
-        onChange={(e) => setDescription(e.target.value)}
-        rows={2}
-        className="w-full rounded-md border border-gray-200 px-3 py-2 text-sm shadow-sm focus:border-brand focus:ring-brand/20"
-        placeholder="Describe el gasto"
-        required
-      />
-    </div>
+          value={description}
+          onChange={(e) => setDescription(e.target.value)}
+          rows={2}
+          className="w-full rounded-md border border-gray-200 px-3 py-2 text-sm shadow-sm focus:border-brand focus:ring-brand/20"
+          placeholder="Describe el gasto o servicio"
+          required
+        />
+      </div>
+
+      {/* Archivo PDF */}
       <div className="space-y-2">
-        <label className="text-xs font-semibold text-gray-700">Factura PDF</label>
+        <label className="text-xs font-semibold text-gray-700">Documento PDF (opcional)</label>
         <input
           type="file"
           accept="application/pdf"
@@ -256,7 +298,7 @@ export default function RegisterPayableForm({ condominiumId, suppliers, expenseI
           disabled={isPending}
           className="rounded-md bg-brand text-white px-4 py-2 text-sm font-semibold shadow-sm hover:bg-brand-dark disabled:opacity-60"
         >
-          Guardar OP
+          {isPending ? "Guardando..." : "Guardar"}
         </button>
       </div>
     </form>

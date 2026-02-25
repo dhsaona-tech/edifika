@@ -83,6 +83,48 @@ export async function POST(request: Request) {
       }
     }
 
+    // ✅ AUTOMATIZACIÓN: Generar PDF y enviar email de forma async (fire-and-forget)
+    // No bloqueamos la respuesta al usuario; esto corre en background
+    const siteUrl = process.env.NEXT_PUBLIC_SITE_URL || new URL(request.url).origin;
+
+    // Fire-and-forget: generar PDF primero, luego enviar email
+    (async () => {
+      try {
+        // Paso 1: Generar el PDF (esto también lo guarda en Storage y actualiza pdf_url)
+        const pdfRes = await fetch(
+          `${siteUrl}/api/payments/${paymentId}/receipt?condominiumId=${condominiumId}`,
+          { method: "GET" }
+        );
+
+        if (!pdfRes.ok) {
+          console.warn(`[EDIFIKA Auto] No se pudo generar PDF para pago ${paymentId}`);
+          return;
+        }
+
+        // Paso 2: Enviar email con el link al PDF
+        const emailRes = await fetch(
+          `${siteUrl}/api/payments/${paymentId}/send-receipt`,
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ condominiumId }),
+          }
+        );
+
+        if (emailRes.ok) {
+          const emailResult = await emailRes.json();
+          if (emailResult.sent) {
+            console.log(`[EDIFIKA Auto] Email enviado para pago ${paymentId} a ${emailResult.recipientEmail}`);
+          } else {
+            console.log(`[EDIFIKA Auto] Email no enviado para pago ${paymentId}: ${emailResult.reason || emailResult.error}`);
+          }
+        }
+      } catch (err) {
+        // Silenciar errores: el pago ya se registró, el email es best-effort
+        console.warn("[EDIFIKA Auto] Error en automatización post-pago:", err);
+      }
+    })();
+
     return NextResponse.json({ success: true, paymentId });
   } catch (e: any) {
     return NextResponse.json({ error: e?.message || "Error registrando pago" }, { status: 500 });
