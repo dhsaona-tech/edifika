@@ -30,42 +30,118 @@ export interface DashboardMetrics {
 export async function getDashboardMetrics(condominiumId: string): Promise<DashboardMetrics> {
   const supabase = await createClient();
 
-  // 1. Unidades
-  const { count: totalUnits } = await supabase
-    .from("units")
-    .select("*", { count: "exact", head: true })
-    .eq("condominium_id", condominiumId);
+  const currentMonth = new Date().toISOString().slice(0, 7); // YYYY-MM
+  const sevenDaysAgo = new Date();
+  sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
+  const sevenDaysAgoStr = sevenDaysAgo.toISOString().split("T")[0];
 
-  const { count: activeUnits } = await supabase
-    .from("units")
-    .select("*", { count: "exact", head: true })
-    .eq("condominium_id", condominiumId)
-    .eq("status", "activa");
+  // ── Fase 1: Todas las queries independientes en paralelo ──
+  const [
+    totalUnitsRes,
+    activeUnitsRes,
+    chargesWithDebtRes,
+    membersRes,
+    unitsRes,
+    pendingChargesRes,
+    monthlyPaymentsRes,
+    monthlyEgressesRes,
+    accountsRes,
+    recentPaymentsRes,
+    recentChargesRes,
+    pendingPayablesRes,
+  ] = await Promise.all([
+    // 1. Total unidades
+    supabase
+      .from("units")
+      .select("*", { count: "exact", head: true })
+      .eq("condominium_id", condominiumId),
 
-  // Unidades con deuda
-  const { data: chargesData } = await supabase
-    .from("charges")
-    .select("unit_id, balance, status")
-    .eq("condominium_id", condominiumId)
-    .eq("status", "pendiente")
-    .gt("balance", 0);
+    // 2. Unidades activas
+    supabase
+      .from("units")
+      .select("*", { count: "exact", head: true })
+      .eq("condominium_id", condominiumId)
+      .eq("status", "activa"),
 
-  const unitsWithDebt = new Set(chargesData?.map((c) => c.unit_id) || []).size;
+    // 3. Unidades con deuda (incluye parcialmente_pagado)
+    supabase
+      .from("charges")
+      .select("unit_id, balance, status")
+      .eq("condominium_id", condominiumId)
+      .in("status", ["pendiente", "parcialmente_pagado"])
+      .gt("balance", 0),
 
-  // 2. Residentes
-  const { data: membersData } = await supabase
-    .from("memberships")
-    .select("profile_id, role")
-    .eq("condominium_id", condominiumId)
-    .eq("status", "activo");
+    // 4. Membresías activas
+    supabase
+      .from("memberships")
+      .select("profile_id, role")
+      .eq("condominium_id", condominiumId)
+      .eq("status", "activo"),
 
-  // Obtener unidades del condominio primero
-  const { data: unitsData } = await supabase
-    .from("units")
-    .select("id")
-    .eq("condominium_id", condominiumId);
+    // 5. IDs de unidades (para contactos)
+    supabase
+      .from("units")
+      .select("id")
+      .eq("condominium_id", condominiumId),
 
-  const unitIds = unitsData?.map((u) => u.id) || [];
+    // 6. Cargos pendientes y deuda total (incluye parcialmente_pagado)
+    supabase
+      .from("charges")
+      .select("balance, total_amount")
+      .eq("condominium_id", condominiumId)
+      .in("status", ["pendiente", "parcialmente_pagado"]),
+
+    // 7. Ingresos del mes
+    supabase
+      .from("payments")
+      .select("total_amount")
+      .eq("condominium_id", condominiumId)
+      .gte("payment_date", `${currentMonth}-01`)
+      .lt("payment_date", `${currentMonth}-32`)
+      .neq("status", "cancelado"),
+
+    // 8. Egresos del mes
+    supabase
+      .from("egresses")
+      .select("total_amount")
+      .eq("condominium_id", condominiumId)
+      .gte("egress_date", `${currentMonth}-01`)
+      .lt("egress_date", `${currentMonth}-32`)
+      .neq("status", "cancelado"),
+
+    // 9. Balance de cuentas
+    supabase
+      .from("financial_accounts")
+      .select("current_balance")
+      .eq("condominium_id", condominiumId)
+      .eq("is_active", true),
+
+    // 10. Pagos recientes (7 días)
+    supabase
+      .from("payments")
+      .select("*", { count: "exact", head: true })
+      .eq("condominium_id", condominiumId)
+      .gte("payment_date", sevenDaysAgoStr)
+      .neq("status", "cancelado"),
+
+    // 11. Cargos recientes (7 días)
+    supabase
+      .from("charges")
+      .select("*", { count: "exact", head: true })
+      .eq("condominium_id", condominiumId)
+      .gte("posted_date", sevenDaysAgoStr)
+      .neq("status", "cancelado"),
+
+    // 12. Cuentas por pagar pendientes (tabla correcta: payable_orders)
+    supabase
+      .from("payable_orders")
+      .select("*", { count: "exact", head: true })
+      .eq("condominium_id", condominiumId)
+      .in("status", ["pendiente", "parcialmente_pagado"]),
+  ]);
+
+  // ── Fase 2: Contactos (depende de unitsData) ──
+  const unitIds = unitsRes.data?.map((u) => u.id) || [];
 
   const { data: contactsData } = await supabase
     .from("unit_contacts")
@@ -73,6 +149,11 @@ export async function getDashboardMetrics(condominiumId: string): Promise<Dashbo
     .in("unit_id", unitIds.length > 0 ? unitIds : ["00000000-0000-0000-0000-000000000000"])
     .is("end_date", null);
 
+  // ── Procesar resultados ──
+  const chargesData = chargesWithDebtRes.data;
+  const unitsWithDebt = new Set(chargesData?.map((c) => c.unit_id) || []).size;
+
+  const membersData = membersRes.data;
   const uniqueResidents = new Set([
     ...(membersData?.map((m) => m.profile_id) || []),
     ...(contactsData?.map((c) => c.profile_id) || []),
@@ -81,79 +162,22 @@ export async function getDashboardMetrics(condominiumId: string): Promise<Dashbo
   const owners = contactsData?.filter((c) => c.relationship_type === "OWNER").length || 0;
   const tenants = contactsData?.filter((c) => c.relationship_type === "TENANT").length || 0;
 
-  // 3. Financiero
-  // Cargos pendientes y deuda total
-  const { data: pendingChargesData } = await supabase
-    .from("charges")
-    .select("balance, total_amount")
-    .eq("condominium_id", condominiumId)
-    .eq("status", "pendiente");
-
+  const pendingChargesData = pendingChargesRes.data;
   const pendingCharges = pendingChargesData?.length || 0;
   const totalDebt =
     pendingChargesData?.reduce((sum, c) => sum + Number(c.balance || 0), 0) || 0;
 
-  // Ingresos del mes actual
-  const currentMonth = new Date().toISOString().slice(0, 7); // YYYY-MM
-  const { data: monthlyPayments } = await supabase
-    .from("payments")
-    .select("total_amount")
-    .eq("condominium_id", condominiumId)
-    .gte("payment_date", `${currentMonth}-01`)
-    .lt("payment_date", `${currentMonth}-32`)
-    .neq("status", "cancelado");
-
-  const monthlyIncome = monthlyPayments?.reduce((sum, p) => sum + Number(p.total_amount || 0), 0) || 0;
-
-  // Egresos del mes actual
-  const { data: monthlyEgresses } = await supabase
-    .from("egresses")
-    .select("total_amount")
-    .eq("condominium_id", condominiumId)
-    .gte("egress_date", `${currentMonth}-01`)
-    .lt("egress_date", `${currentMonth}-32`)
-    .neq("status", "cancelado");
-
-  const monthlyExpenses = monthlyEgresses?.reduce((sum, e) => sum + Number(e.total_amount || 0), 0) || 0;
-
-  // Balance de cuentas financieras
-  const { data: accounts } = await supabase
-    .from("financial_accounts")
-    .select("current_balance")
-    .eq("condominium_id", condominiumId)
-    .eq("is_active", true);
-
-  const accountBalance = accounts?.reduce((sum, a) => sum + Number(a.current_balance || 0), 0) || 0;
-
-  // 4. Actividad reciente (últimos 7 días)
-  const sevenDaysAgo = new Date();
-  sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
-  const sevenDaysAgoStr = sevenDaysAgo.toISOString().split("T")[0];
-
-  const { count: recentPayments } = await supabase
-    .from("payments")
-    .select("*", { count: "exact", head: true })
-    .eq("condominium_id", condominiumId)
-    .gte("payment_date", sevenDaysAgoStr)
-    .neq("status", "cancelado");
-
-  const { count: recentCharges } = await supabase
-    .from("charges")
-    .select("*", { count: "exact", head: true })
-    .eq("condominium_id", condominiumId)
-    .gte("posted_date", sevenDaysAgoStr)
-    .neq("status", "cancelado");
-
-  const { count: pendingPayables } = await supabase
-    .from("payables")
-    .select("*", { count: "exact", head: true })
-    .eq("condominium_id", condominiumId)
-    .eq("status", "pendiente");
+  const monthlyIncome =
+    monthlyPaymentsRes.data?.reduce((sum, p) => sum + Number(p.total_amount || 0), 0) || 0;
+  const monthlyExpenses =
+    monthlyEgressesRes.data?.reduce((sum, e) => sum + Number(e.total_amount || 0), 0) || 0;
+  const accountBalance =
+    accountsRes.data?.reduce((sum, a) => sum + Number(a.current_balance || 0), 0) || 0;
 
   return {
     units: {
-      total: totalUnits || 0,
-      active: activeUnits || 0,
+      total: totalUnitsRes.count || 0,
+      active: activeUnitsRes.count || 0,
       withDebt: unitsWithDebt,
     },
     residents: {
@@ -169,9 +193,9 @@ export async function getDashboardMetrics(condominiumId: string): Promise<Dashbo
       accountBalance,
     },
     recentActivity: {
-      recentPayments: recentPayments || 0,
-      recentCharges: recentCharges || 0,
-      pendingPayables: pendingPayables || 0,
+      recentPayments: recentPaymentsRes.count || 0,
+      recentCharges: recentChargesRes.count || 0,
+      pendingPayables: pendingPayablesRes.count || 0,
     },
   };
 }

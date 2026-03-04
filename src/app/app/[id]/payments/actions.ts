@@ -13,6 +13,7 @@ import {
   paymentDirectSchema,
   paymentGeneralSchema,
 } from "@/lib/payments/schemas";
+import { isEffectivelyZero, toCents } from "@/lib/utils/money";
 
 type PaymentFilters = {
   status?: "disponible" | "cancelado";
@@ -51,8 +52,7 @@ export async function listarPayments(condominiumId: string, filters?: PaymentFil
   if (filters?.status) {
     query = query.eq("status", filters.status);
   } else {
-    // excluir anulados por defecto
-    query = query.neq("status", "cancelado");
+    query = query.neq("status", "cancelado").neq("status", "anulado");
   }
   if (filters?.method) query = query.eq("payment_method", filters.method);
   if (filters?.accountId) query = query.eq("financial_account_id", filters.accountId);
@@ -68,18 +68,21 @@ export async function listarPayments(condominiumId: string, filters?: PaymentFil
   }
   const payments = data || [];
 
-  // Enriquecer nombres sin usar joins para evitar errores de cache/RLS
   const unitIds = payments.map((p) => p.unit_id).filter(Boolean) as string[];
-  const payerIds = payments.map((p) => p.payer_profile_id).filter(Boolean) as string[];
   const accountIds = payments.map((p) => p.financial_account_id).filter(Boolean) as string[];
   const expenseIds = payments.map((p) => p.expense_item_id).filter(Boolean) as string[];
 
-  const [unitsRes, payersRes, accountsRes, expensesRes, contactsRes] = await Promise.all([
+  // Registros SIN snapshot (pre-migración) necesitan fallback dinámico
+  const needsFallbackUnitIds = payments
+    .filter((p) => !p.billing_name && p.unit_id)
+    .map((p) => p.unit_id) as string[];
+  const needsFallbackPayerIds = payments
+    .filter((p) => !p.billing_name && p.payer_profile_id)
+    .map((p) => p.payer_profile_id) as string[];
+
+  const [unitsRes, accountsRes, expensesRes, fallbackContactsRes, fallbackPayersRes] = await Promise.all([
     unitIds.length
       ? supabase.from("units").select("id, full_identifier, identifier").in("id", unitIds)
-      : Promise.resolve({ data: [] as any[] }),
-    payerIds.length
-      ? supabase.from("profiles").select("id, full_name").in("id", payerIds)
       : Promise.resolve({ data: [] as any[] }),
     accountIds.length
       ? supabase.from("financial_accounts").select("id, bank_name, account_number").in("id", accountIds)
@@ -87,38 +90,54 @@ export async function listarPayments(condominiumId: string, filters?: PaymentFil
     expenseIds.length
       ? supabase.from("expense_items").select("id, name").in("id", expenseIds)
       : Promise.resolve({ data: [] as any[] }),
-    unitIds.length
+    // Fallback dinámico SOLO para registros viejos sin snapshot
+    needsFallbackUnitIds.length
       ? supabase
           .from("unit_contacts")
-          .select("unit_id, is_primary_contact, end_date, profiles(id, full_name)")
-          .in("unit_id", unitIds)
+          .select("unit_id, profiles(id, full_name)")
+          .in("unit_id", needsFallbackUnitIds)
           .eq("is_primary_contact", true)
           .is("end_date", null)
+      : Promise.resolve({ data: [] as any[] }),
+    needsFallbackPayerIds.length
+      ? supabase.from("profiles").select("id, full_name").in("id", needsFallbackPayerIds)
       : Promise.resolve({ data: [] as any[] }),
   ]);
 
   const unitsMap = new Map<string, any>();
-  const payersMap = new Map<string, any>();
   const accountsMap = new Map<string, any>();
   const expensesMap = new Map<string, any>();
-  const contactMap = new Map<string, any>();
+  const fallbackContactMap = new Map<string, string>();
+  const fallbackPayerMap = new Map<string, string>();
 
   (unitsRes.data || []).forEach((u) => unitsMap.set(u.id, u));
-  (payersRes.data || []).forEach((p) => payersMap.set(p.id, p));
   (accountsRes.data || []).forEach((a) => accountsMap.set(a.id, a));
   (expensesRes.data || []).forEach((e) => expensesMap.set(e.id, e));
-  (contactsRes.data || []).forEach((c: any) => {
-    if (c.unit_id && c.profiles) contactMap.set(c.unit_id, c.profiles);
+  (fallbackContactsRes.data || []).forEach((c: any) => {
+    const profile = Array.isArray(c.profiles) ? c.profiles[0] : c.profiles;
+    if (c.unit_id && profile?.full_name) fallbackContactMap.set(c.unit_id, profile.full_name);
+  });
+  (fallbackPayersRes.data || []).forEach((p: any) => {
+    if (p.id && p.full_name) fallbackPayerMap.set(p.id, p.full_name);
   });
 
-  return payments.map((p) => ({
-    ...p,
-    unit: unitsMap.get(p.unit_id) || null,
-    payer: payersMap.get(p.payer_profile_id) || contactMap.get(p.unit_id) || null,
-    financial_account: accountsMap.get(p.financial_account_id) || null,
-    expense_item: expensesMap.get(p.expense_item_id) || null,
-    attachment_url: (p as any).attachment_url ?? null,
-  }));
+  return payments.map((p) => {
+    // PRIORIDAD: 1) Snapshot inmutable → 2) Fallback dinámico (solo registros viejos)
+    const payerName =
+      p.billing_name ||
+      fallbackPayerMap.get(p.payer_profile_id) ||
+      fallbackContactMap.get(p.unit_id) ||
+      "-";
+
+    return {
+      ...p,
+      unit: unitsMap.get(p.unit_id) || null,
+      financial_account: accountsMap.get(p.financial_account_id) || null,
+      expense_item: expensesMap.get(p.expense_item_id) || null,
+      attachment_url: (p as any).attachment_url ?? null,
+      payer: { full_name: payerName },
+    };
+  });
 }
 
 export async function listarPaymentsAnulados(condominiumId: string) {
@@ -128,7 +147,6 @@ export async function listarPaymentsAnulados(condominiumId: string) {
 export async function getPaymentDetail(condominiumId: string, paymentId: string) {
   const supabase = await createClient();
 
-  // Obtener el pago
   const { data: payment, error } = await supabase
     .from("payments")
     .select("*")
@@ -141,13 +159,9 @@ export async function getPaymentDetail(condominiumId: string, paymentId: string)
     return null;
   }
 
-  // Cargar relaciones en paralelo
-  const [unitRes, payerRes, accountRes, allocationsRes, contactRes] = await Promise.all([
+  const [unitRes, accountRes, allocationsRes] = await Promise.all([
     payment.unit_id
       ? supabase.from("units").select("id, full_identifier, identifier").eq("id", payment.unit_id).single()
-      : Promise.resolve({ data: null }),
-    payment.payer_profile_id
-      ? supabase.from("profiles").select("id, full_name").eq("id", payment.payer_profile_id).single()
       : Promise.resolve({ data: null }),
     payment.financial_account_id
       ? supabase
@@ -175,15 +189,6 @@ export async function getPaymentDetail(condominiumId: string, paymentId: string)
       `
       )
       .eq("payment_id", paymentId),
-    payment.unit_id
-      ? supabase
-          .from("unit_contacts")
-          .select("unit_id, profiles(id, full_name)")
-          .eq("unit_id", payment.unit_id)
-          .eq("is_primary_contact", true)
-          .is("end_date", null)
-          .limit(1)
-      : Promise.resolve({ data: [] as any[] }),
   ]);
 
   const allocations = (allocationsRes.data || []).map((a: any) => ({
@@ -192,19 +197,63 @@ export async function getPaymentDetail(condominiumId: string, paymentId: string)
     charge: Array.isArray(a.charge) ? a.charge[0] : a.charge,
   }));
 
-  // Determinar payer: primero payer_profile_id, sino el contacto principal de la unidad
-  let payer = payerRes.data || null;
-  if (!payer && contactRes.data && contactRes.data.length > 0) {
-    const contact = contactRes.data[0];
-    payer = Array.isArray(contact.profiles) ? contact.profiles[0] : contact.profiles;
+  // ── Fallback dinámico para registros pre-migración sin snapshot ──
+  let payerData = {
+    full_name: payment.billing_name || "-",
+    national_id: payment.billing_national_id || null,
+    email: payment.billing_email || null,
+    phone: payment.billing_phone || null,
+    address: payment.billing_address || null,
+  };
+
+  if (!payment.billing_name) {
+    // Prioridad 1: payer_profile_id → profiles
+    if (payment.payer_profile_id) {
+      const { data: fallbackPayer } = await supabase
+        .from("profiles")
+        .select("full_name, national_id, email, phone, address")
+        .eq("id", payment.payer_profile_id)
+        .maybeSingle();
+      if (fallbackPayer?.full_name) {
+        payerData = {
+          full_name: fallbackPayer.full_name,
+          national_id: fallbackPayer.national_id || null,
+          email: fallbackPayer.email || null,
+          phone: fallbackPayer.phone || null,
+          address: fallbackPayer.address || null,
+        };
+      }
+    }
+    // Prioridad 2: unit_contacts → profiles (contacto primario actual)
+    if (payerData.full_name === "-" && payment.unit_id) {
+      const { data: fallbackContact } = await supabase
+        .from("unit_contacts")
+        .select("profiles(full_name, national_id, email, phone, address)")
+        .eq("unit_id", payment.unit_id)
+        .eq("is_primary_contact", true)
+        .is("end_date", null)
+        .maybeSingle();
+      const profile = Array.isArray((fallbackContact as any)?.profiles)
+        ? (fallbackContact as any).profiles[0]
+        : (fallbackContact as any)?.profiles;
+      if (profile?.full_name) {
+        payerData = {
+          full_name: profile.full_name,
+          national_id: profile.national_id || null,
+          email: profile.email || null,
+          phone: profile.phone || null,
+          address: profile.address || null,
+        };
+      }
+    }
   }
 
   return {
     ...payment,
     unit: unitRes.data || null,
-    payer,
     financial_account: accountRes.data || null,
     allocations,
+    payer: payerData,
   };
 }
 
@@ -301,7 +350,6 @@ export async function createPayment(
     return { error: "La suma asignada supera el monto del pago." };
   }
 
-  // ✅ VALIDACIÓN SERVIDOR: Re-fetch balances reales desde DB (no confiar en cliente)
   if (allocations.length > 0) {
     const chargeIds = allocations.map((a) => a.charge_id);
     const { data: realCharges, error: chargesError } = await supabase
@@ -314,25 +362,21 @@ export async function createPayment(
       return { error: "No se pudieron validar los cargos." };
     }
 
-    // Crear mapa de balances reales
     const realBalanceMap = new Map<string, number>();
     realCharges.forEach((c) => realBalanceMap.set(c.id, Number(c.balance || 0)));
 
-    // Validar que todos los cargos existen y son del condominio correcto
     if (realCharges.length !== chargeIds.length) {
       return { error: "Uno o más cargos no existen o no pertenecen a este condominio." };
     }
 
-    // Validar que ningún cargo esté cancelado
     const canceledCharge = realCharges.find((c) => c.status === "cancelado" || c.status === "eliminado");
     if (canceledCharge) {
       return { error: "No puedes asignar pagos a cargos cancelados o eliminados." };
     }
 
-    // Validar que el monto asignado no exceda el balance REAL
     for (const alloc of allocations) {
       const realBalance = realBalanceMap.get(alloc.charge_id) || 0;
-      if (alloc.amount_allocated > realBalance + 0.01) {
+      if (toCents(alloc.amount_allocated) > toCents(realBalance)) {
         return {
           error: `El monto asignado (${alloc.amount_allocated.toFixed(2)}) excede el saldo real del cargo (${realBalance.toFixed(2)}). Recarga la página e intenta de nuevo.`
         };
@@ -340,8 +384,61 @@ export async function createPayment(
     }
   }
 
-  // ✅ ELIMINADO: reserve_folio_rec
-  // El trigger assign_folio_rec() lo hace automáticamente
+  const unitId = parsedApply?.unit_id || parsedDirect?.unit_id || null;
+  let billingSnapshot = {
+    name: "-" as string,
+    national_id: null as string | null,
+    email: null as string | null,
+    phone: null as string | null,
+    address: null as string | null,
+    contact_type: null as string | null,
+  };
+
+  if (unitId) {
+    // Resolver billing contact: query unit_contacts + profiles con jerarquía
+    const { data: contacts } = await supabase
+      .from("unit_contacts")
+      .select("id, relationship_type, is_primary_contact, end_date, profiles(full_name, first_name, last_name, national_id, email, phone, address)")
+      .eq("unit_id", unitId)
+      .is("end_date", null);
+
+    if (contacts && contacts.length > 0) {
+      // Jerarquía: 1) primary_contact, 2) TENANT, 3) OWNER, 4) DEVELOPER, 5) primero
+      const selected =
+        contacts.find((c: any) => c.is_primary_contact) ||
+        contacts.find((c: any) => c.relationship_type === "TENANT") ||
+        contacts.find((c: any) => c.relationship_type === "OWNER") ||
+        contacts.find((c: any) => c.relationship_type === "DEVELOPER") ||
+        contacts[0];
+
+      const profile = Array.isArray((selected as any).profiles)
+        ? (selected as any).profiles[0]
+        : (selected as any).profiles;
+
+      if (profile) {
+        billingSnapshot.name = profile.full_name || `${profile.first_name || ""} ${profile.last_name || ""}`.trim() || "-";
+        billingSnapshot.national_id = profile.national_id || null;
+        billingSnapshot.email = profile.email || null;
+        billingSnapshot.phone = profile.phone || null;
+        billingSnapshot.address = profile.address || null;
+        billingSnapshot.contact_type = (selected as any).relationship_type || null;
+      }
+    }
+  } else if (parsedGeneral.payer_profile_id) {
+    const { data: payerProfile } = await supabase
+      .from("profiles")
+      .select("full_name, first_name, last_name, national_id, email, phone, address")
+      .eq("id", parsedGeneral.payer_profile_id)
+      .maybeSingle();
+
+    if (payerProfile) {
+      billingSnapshot.name = payerProfile.full_name || `${payerProfile.first_name || ''} ${payerProfile.last_name || ''}`.trim() || "-";
+      billingSnapshot.national_id = payerProfile.national_id || null;
+      billingSnapshot.email = payerProfile.email || null;
+      billingSnapshot.phone = payerProfile.phone || null;
+      billingSnapshot.address = payerProfile.address || null;
+    }
+  }
 
   const { data, error } = await supabase.rpc("apply_payment_to_charges", {
     in_condominium_id: condominiumId,
@@ -352,23 +449,28 @@ export async function createPayment(
     in_reference_number: parsedGeneral.reference_number || null,
     in_notes: parsedGeneral.notes || null,
     in_payer_profile_id: parsedGeneral.payer_profile_id || null,
-    in_unit_id: parsedApply?.unit_id || parsedDirect?.unit_id || null,
+    in_unit_id: unitId,
     in_expense_item_id: parsedDirect?.expense_item_id || parsedApply?.expense_item_id_for_remainder || null,
     in_allocations: allocations.map((a) => ({
       charge_id: a.charge_id,
       amount_allocated: a.amount_allocated,
     })),
-    // ✅ ELIMINADO: in_folio_rec (el trigger lo asigna automáticamente)
+    in_folio_rec: (parsedGeneral as any).folio_rec || null,
+    in_billing_name: billingSnapshot.name,
+    in_billing_national_id: billingSnapshot.national_id,
+    in_billing_email: billingSnapshot.email,
+    in_billing_phone: billingSnapshot.phone,
+    in_billing_address: billingSnapshot.address,
+    in_billing_contact_type: billingSnapshot.contact_type,
   });
 
   if (error) {
-    console.error("Error creando payment", error);
+    console.error("Error creando payment:", error);
     return { error: error.message || "No se pudo crear el ingreso." };
   }
 
   const paymentId = data as string;
 
-  // Audit log: registrar creación de pago
   logAudit({
     condominiumId,
     tableName: "payments",
@@ -377,8 +479,9 @@ export async function createPayment(
     newValues: {
       total_amount: parsedGeneral.total_amount,
       payment_method: parsedGeneral.payment_method,
-      unit_id: parsedApply?.unit_id || parsedDirect?.unit_id || null,
+      unit_id: unitId,
       allocations_count: allocations.length,
+      billing_name: billingSnapshot.name
     },
   });
 
@@ -399,8 +502,6 @@ export async function cancelPayment(
 
   const supabase = await createClient();
 
-  // REGLA 10.5: Verificar si el pago está conciliado (bloqueado)
-  // Usar la función SQL is_payment_reconciled si existe, sino hacer consulta directa
   try {
     const { data: isReconciled, error: rpcError } = await supabase.rpc("is_payment_reconciled", {
       in_payment_id: paymentId,
@@ -412,7 +513,6 @@ export async function cancelPayment(
       };
     }
   } catch {
-    // Si la función no existe, hacer consulta directa
     const { data: reconciledItem } = await supabase
       .from("reconciliation_items")
       .select(`id, reconciliation:reconciliations!inner(status)`)
@@ -440,7 +540,6 @@ export async function cancelPayment(
   
   const cancelledBy = profileId || null;
   
-  // ✅ Usar la función anular_payment que instalamos esta mañana
   const { data, error } = await supabase.rpc('anular_payment', {
     p_payment_id: paymentId,
     p_cancelled_by_profile_id: cancelledBy,
@@ -452,7 +551,6 @@ export async function cancelPayment(
     return { error: error.message || "No se pudo anular el ingreso." };
   }
   
-  // Audit log: registrar anulación de pago
   logAudit({
     condominiumId,
     tableName: "payments",
@@ -583,10 +681,6 @@ export async function rejectPaymentReport(condominiumId: string, reportId: strin
   return { success: true };
 }
 
-// ============================================================================
-// PRONTO PAGO
-// ============================================================================
-
 export async function checkEarlyPaymentEligibility(
   condominiumId: string,
   unitId: string,
@@ -594,7 +688,6 @@ export async function checkEarlyPaymentEligibility(
 ) {
   const supabase = await createClient();
 
-  // Verificar configuración de pronto pago
   const { data: settings } = await supabase
     .from("condominium_billing_settings")
     .select("early_payment_enabled")
@@ -605,7 +698,6 @@ export async function checkEarlyPaymentEligibility(
     return { eligible: false, reason: "Pronto pago no habilitado", discount_amount: 0 };
   }
 
-  // Llamar función RPC
   const { data, error } = await supabase.rpc("check_early_payment_eligibility", {
     p_unit_id: unitId,
     p_charge_ids: chargeIds,
@@ -671,10 +763,6 @@ export async function getChargesWithEarlyPaymentInfo(condominiumId: string, unit
   }));
 }
 
-// ============================================================================
-// CRÉDITOS / SALDOS A FAVOR
-// ============================================================================
-
 export async function getUnitCreditBalance(condominiumId: string, unitId: string): Promise<number> {
   const supabase = await createClient();
 
@@ -696,13 +784,11 @@ export async function applyCreditToPayment(
 ) {
   const supabase = await createClient();
 
-  // Verificar saldo disponible
   const currentBalance = await getUnitCreditBalance(condominiumId, unitId);
-  if (currentBalance < creditAmount - 0.01) {
+  if (toCents(currentBalance) < toCents(creditAmount)) {
     return { error: "Saldo a favor insuficiente" };
   }
 
-  // Obtener cargos
   const { data: charges } = await supabase
     .from("charges")
     .select("id, balance, paid_amount")
@@ -722,15 +808,13 @@ export async function applyCreditToPayment(
   let remainingCredit = creditAmount;
   let appliedTotal = 0;
 
-  // Aplicar crédito a cada cargo (FIFO)
   for (const charge of charges) {
-    if (remainingCredit <= 0.01) break;
+    if (isEffectivelyZero(remainingCredit)) break;
 
     const applyAmount = Math.min(remainingCredit, charge.balance);
     const newBalance = Math.round((charge.balance - applyAmount) * 100) / 100;
-    const newStatus = newBalance <= 0.01 ? "pagado" : "pendiente";
+    const newStatus = isEffectivelyZero(newBalance) ? "pagado" : "pendiente";
 
-    // Actualizar cargo
     const newPaidAmount = Number(charge.paid_amount || 0) + applyAmount;
     await supabase
       .from("charges")
@@ -741,13 +825,12 @@ export async function applyCreditToPayment(
       })
       .eq("id", charge.id);
 
-    // Registrar movimiento de crédito
     await supabase.from("unit_credits").insert({
       condominium_id: condominiumId,
       unit_id: unitId,
       movement_type: "credit_out",
       amount: -applyAmount,
-      running_balance: 0, // Se calcula en trigger
+      running_balance: 0,
       charge_id: charge.id,
       description: `Aplicado a cargo pendiente`,
       created_by: user?.id || null,
@@ -764,14 +847,9 @@ export async function applyCreditToPayment(
   return { success: true, applied_amount: appliedTotal };
 }
 
-// ============================================================================
-// MULTI-UNIDAD: Obtener otras unidades del mismo propietario
-// ============================================================================
-
 export async function getOwnerOtherUnits(condominiumId: string, unitId: string) {
   const supabase = await createClient();
 
-  // Primero obtener el propietario principal de la unidad seleccionada
   const { data: primaryContact } = await supabase
     .from("unit_contacts")
     .select("profile_id")
@@ -785,7 +863,6 @@ export async function getOwnerOtherUnits(condominiumId: string, unitId: string) 
     return [];
   }
 
-  // Buscar otras unidades donde esta persona es propietario
   const { data: otherUnits } = await supabase
     .from("unit_contacts")
     .select(`
@@ -802,13 +879,12 @@ export async function getOwnerOtherUnits(condominiumId: string, unitId: string) 
     .eq("relationship_type", "OWNER")
     .eq("is_primary_contact", true)
     .is("end_date", null)
-    .neq("unit_id", unitId); // Excluir la unidad actual
+    .neq("unit_id", unitId); 
 
   if (!otherUnits?.length) {
     return [];
   }
 
-  // Filtrar por condominio y estado activo
   const filtered = otherUnits
     .filter((uc: any) => {
       const unit = Array.isArray(uc.unit) ? uc.unit[0] : uc.unit;
@@ -826,7 +902,6 @@ export async function getOwnerOtherUnits(condominiumId: string, unitId: string) 
   return filtered;
 }
 
-// Obtener cargos pendientes de múltiples unidades
 export async function getPendingChargesMultiUnit(
   condominiumId: string,
   unitIds: string[]
@@ -835,7 +910,6 @@ export async function getPendingChargesMultiUnit(
 
   const supabase = await createClient();
 
-  // Obtener cargos
   const { data, error } = await supabase
     .from("charges")
     .select(`
@@ -877,10 +951,6 @@ export async function getPendingChargesMultiUnit(
   });
 }
 
-// ============================================================================
-// INGRESOS NO IDENTIFICADOS
-// ============================================================================
-
 export type UnidentifiedPayment = {
   id: string;
   condominium_id: string;
@@ -913,12 +983,10 @@ export async function listUnidentifiedPayments(condominiumId: string) {
       .order("payment_date", { ascending: false });
 
     if (error) {
-      // Si la tabla no existe, retornar vacío
       if (error.code === "42P01" || error.message?.includes("does not exist")) {
         console.warn("Tabla unidentified_payments no existe aún");
         return [];
       }
-      // Error de permisos RLS - retornar vacío silenciosamente
       if (error.code === "PGRST301" || error.message?.includes("permission")) {
         console.warn("Sin permisos para ver pagos no identificados");
         return [];
@@ -934,7 +1002,6 @@ export async function listUnidentifiedPayments(condominiumId: string) {
         : p.financial_account,
     })) as UnidentifiedPayment[];
   } catch (err) {
-    // Capturar errores de red u otros
     console.error("Error inesperado listando pagos no identificados:", err);
     return [];
   }
@@ -987,7 +1054,6 @@ export async function assignUnidentifiedPayment(
 ) {
   const supabase = await createClient();
 
-  // Obtener el pago no identificado
   const { data: unidentified, error: fetchError } = await supabase
     .from("unidentified_payments")
     .select("*")
@@ -1000,7 +1066,6 @@ export async function assignUnidentifiedPayment(
     return { error: "Pago no identificado no encontrado o ya asignado" };
   }
 
-  // Crear el pago real usando la función existente
   const paymentResult = await createPayment(condominiumId, {
     general: {
       condominium_id: condominiumId,
@@ -1025,10 +1090,8 @@ export async function assignUnidentifiedPayment(
 
   const paymentId = (paymentResult as { paymentId?: string }).paymentId;
 
-  // Obtener usuario actual
   const { data: { user } } = await supabase.auth.getUser();
 
-  // Marcar como asignado
   const { error: updateError } = await supabase
     .from("unidentified_payments")
     .update({
@@ -1042,7 +1105,6 @@ export async function assignUnidentifiedPayment(
 
   if (updateError) {
     console.error("Error actualizando pago no identificado", updateError);
-    // El pago ya se creó, solo falló la actualización del estado
   }
 
   revalidatePath(`/app/${condominiumId}/payments`);

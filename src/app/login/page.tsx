@@ -40,12 +40,18 @@ function LoginForm() {
   }
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-blue-50 to-indigo-100">
-      <div className="max-w-md w-full space-y-8 bg-white p-10 rounded-xl shadow-lg">
+    <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-secondary via-white to-secondary/40">
+      <div className="max-w-md w-full space-y-8 bg-white p-10 rounded-2xl shadow-xl border border-secondary-dark/30">
         {/* Logo */}
         <div className="text-center">
-          <div className="mx-auto h-16 w-16 bg-indigo-600 rounded-lg flex items-center justify-center">
-            <span className="text-white text-2xl font-bold">E</span>
+          <div className="mx-auto h-20 w-20 bg-white rounded-2xl flex items-center justify-center shadow-md border border-secondary-dark/40 overflow-hidden">
+            <Image
+              src="/logos/edifika-logo.png"
+              alt="Logo de Edifika"
+              width={80}
+              height={80}
+              className="object-contain p-2"
+            />
           </div>
           <h2 className="mt-6 text-3xl font-extrabold text-gray-900">
             Edifika
@@ -76,7 +82,7 @@ function LoginForm() {
                 required
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
-                className="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500"
+                className="mt-1 block w-full px-3 py-2 border border-secondary-dark/40 rounded-md shadow-sm focus:outline-none focus:ring-brand focus:border-brand"
                 placeholder="admin@ejemplo.com"
               />
             </div>
@@ -93,7 +99,7 @@ function LoginForm() {
                 required
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
-                className="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500"
+                className="mt-1 block w-full px-3 py-2 border border-secondary-dark/40 rounded-md shadow-sm focus:outline-none focus:ring-brand focus:border-brand"
                 placeholder="••••••••"
               />
             </div>
@@ -105,7 +111,7 @@ function LoginForm() {
                 id="remember-me"
                 name="remember-me"
                 type="checkbox"
-                className="h-4 w-4 text-indigo-600 focus:ring-indigo-500 border-gray-300 rounded"
+                className="h-4 w-4 text-brand focus:ring-brand border-secondary-dark/40 rounded"
               />
               <label htmlFor="remember-me" className="ml-2 block text-sm text-gray-900">
                 Recordarme
@@ -113,7 +119,7 @@ function LoginForm() {
             </div>
 
             <div className="text-sm">
-              <a href="#" className="font-medium text-indigo-600 hover:text-indigo-500">
+              <a href="/forgot-password" className="font-medium text-brand hover:text-brand-dark">
                 ¿Olvidaste tu contraseña?
               </a>
             </div>
@@ -122,16 +128,18 @@ function LoginForm() {
           <button
             type="submit"
             disabled={loading}
-            className="w-full flex justify-center py-2 px-4 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-indigo-600 hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500 disabled:opacity-50 disabled:cursor-not-allowed"
+            className="w-full flex justify-center py-2 px-4 border border-transparent rounded-md shadow-sm text-sm font-semibold text-white bg-brand hover:bg-brand-dark focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-brand disabled:opacity-50 disabled:cursor-not-allowed"
           >
             {loading ? 'Ingresando...' : 'Ingresar'}
           </button>
         </form>
 
         {/* Footer */}
-        <div className="text-center text-sm text-gray-600">
-          <p>Demo: admin@demo.com / demo123</p>
-        </div>
+        {process.env.NODE_ENV === 'development' && (
+          <div className="text-center text-sm text-gray-400">
+            <p>Entorno de desarrollo</p>
+          </div>
+        )}
       </div>
     </div>
   )

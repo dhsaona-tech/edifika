@@ -45,6 +45,10 @@ export async function POST(req: NextRequest, ctx: { params: ParamsArg }) {
   }
 
   const supabase = await createClient();
+  const { data: { user }, error: authError } = await supabase.auth.getUser();
+  if (authError || !user) {
+    return NextResponse.json({ error: "No autorizado" }, { status: 401 });
+  }
 
   // 1. Obtener datos del pago
   const { data: payment, error: paymentError } = await supabase

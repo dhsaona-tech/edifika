@@ -83,8 +83,8 @@ export default function Sidebar({ condominiumId, userRole }: SidebarProps) {
       items: [
         { name: "Unidades", href: getPath("/units"), icon: Building2 },
         { name: "Directorio", href: getPath("/residents"), icon: Users },
-        { name: "Lecturas", href: getPath("/readings"), icon: Gauge, comingSoon: true },
-        { name: "Areas Comunales", href: getPath("/amenities"), icon: Palmtree, comingSoon: true },
+        { name: "Lecturas", href: getPath("/readings"), icon: Gauge },
+        { name: "Areas Comunales", href: getPath("/bookings"), icon: Palmtree },
         { name: "Proveedores", href: getPath("/suppliers"), icon: Truck },
         { name: "Empleados", href: getPath("/employees"), icon: Briefcase, comingSoon: true },
         { name: "Archivo Virtual", href: getPath("/documents"), icon: FolderOpen },

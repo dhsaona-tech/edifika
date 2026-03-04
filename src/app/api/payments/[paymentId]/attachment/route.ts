@@ -6,6 +6,11 @@ export const revalidate = 0;
 export async function POST(req: NextRequest, { params }: { params: Promise<{ paymentId: string }> }) {
   const { paymentId } = await params;
   const supabase = await createClient();
+  const { data: { user }, error: authError } = await supabase.auth.getUser();
+  if (authError || !user) {
+    return NextResponse.json({ error: "No autorizado" }, { status: 401 });
+  }
+
   const bucket = process.env.NEXT_PUBLIC_SUPABASE_BUCKET_ATTACHMENTS || "pdfs";
 
   const form = await req.formData();

@@ -160,60 +160,31 @@ export async function canDeleteFinancialAccount(condominiumId: string, accountId
     return { canDelete: false, blockers: ["Cuenta no encontrada"] };
   }
 
-  // 2. Verificar movimientos (ingresos, egresos, transferencias, ajustes)
-  const { count: movementsCount } = await supabase
-    .from("account_movements")
-    .select("id", { count: "exact", head: true })
-    .eq("financial_account_id", accountId);
+  // 2. Verificar dependencias en paralelo (evita N+1 queries)
+  const queries = [
+    supabase.from("account_movements").select("id", { count: "exact", head: true }).eq("financial_account_id", accountId),
+    supabase.from("payments").select("id", { count: "exact", head: true }).eq("financial_account_id", accountId),
+    supabase.from("egresses").select("id", { count: "exact", head: true }).eq("financial_account_id", accountId),
+    supabase.from("checks").select("id", { count: "exact", head: true }).eq("financial_account_id", accountId).neq("status", "disponible"),
+  ];
 
-  if (movementsCount && movementsCount > 0) {
-    blockers.push(`Tiene ${movementsCount} movimiento(s) registrado(s)`);
-  }
-
-  // 3. Verificar pagos asociados
-  const { count: paymentsCount } = await supabase
-    .from("payments")
-    .select("id", { count: "exact", head: true })
-    .eq("financial_account_id", accountId);
-
-  if (paymentsCount && paymentsCount > 0) {
-    blockers.push(`Tiene ${paymentsCount} pago(s) registrado(s)`);
-  }
-
-  // 4. Verificar egresos asociados
-  const { count: egressesCount } = await supabase
-    .from("egresses")
-    .select("id", { count: "exact", head: true })
-    .eq("financial_account_id", accountId);
-
-  if (egressesCount && egressesCount > 0) {
-    blockers.push(`Tiene ${egressesCount} egreso(s) registrado(s)`);
-  }
-
-  // 5. Si es caja chica, verificar comprobantes (no anulados)
-  // Los períodos vacíos (sin comprobantes) se pueden eliminar
+  // Solo consultar vouchers si es caja chica
   if (account.account_type === "caja_chica") {
-    const { count: vouchersCount } = await supabase
-      .from("petty_cash_vouchers")
-      .select("id", { count: "exact", head: true })
-      .eq("financial_account_id", accountId)
-      .neq("status", "anulado");
-
-    if (vouchersCount && vouchersCount > 0) {
-      blockers.push(`Tiene ${vouchersCount} comprobante(s) de caja chica`);
-    }
+    queries.push(
+      supabase.from("petty_cash_vouchers").select("id", { count: "exact", head: true }).eq("financial_account_id", accountId).neq("status", "anulado")
+    );
   }
 
-  // 6. Verificar cheques usados (no disponibles)
-  const { count: usedChecksCount } = await supabase
-    .from("checks")
-    .select("id", { count: "exact", head: true })
-    .eq("financial_account_id", accountId)
-    .neq("status", "disponible");
+  const results = await Promise.all(queries);
 
-  if (usedChecksCount && usedChecksCount > 0) {
-    blockers.push(`Tiene ${usedChecksCount} cheque(s) usado(s) o anulado(s)`);
-  }
+  const [movementsRes, paymentsRes, egressesRes, checksRes, ...rest] = results;
+  const vouchersRes = rest[0];
+
+  if (movementsRes.count && movementsRes.count > 0) blockers.push(`Tiene ${movementsRes.count} movimiento(s) registrado(s)`);
+  if (paymentsRes.count && paymentsRes.count > 0) blockers.push(`Tiene ${paymentsRes.count} pago(s) registrado(s)`);
+  if (egressesRes.count && egressesRes.count > 0) blockers.push(`Tiene ${egressesRes.count} egreso(s) registrado(s)`);
+  if (checksRes.count && checksRes.count > 0) blockers.push(`Tiene ${checksRes.count} cheque(s) usado(s) o anulado(s)`);
+  if (vouchersRes && vouchersRes.count && vouchersRes.count > 0) blockers.push(`Tiene ${vouchersRes.count} comprobante(s) de caja chica`);
 
   return {
     canDelete: blockers.length === 0,

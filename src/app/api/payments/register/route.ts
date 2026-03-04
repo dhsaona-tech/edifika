@@ -4,6 +4,12 @@ import { cancelPayment, createPayment } from "@/app/app/[id]/payments/actions";
 
 export async function POST(request: Request) {
   try {
+    const supabase = await createClient();
+    const { data: { user }, error: authError } = await supabase.auth.getUser();
+    if (authError || !user) {
+      return NextResponse.json({ error: "No autorizado" }, { status: 401 });
+    }
+
     const contentType = request.headers.get("content-type") || "";
     let payload: any = null;
     let attachment: File | null = null;
@@ -35,7 +41,6 @@ export async function POST(request: Request) {
     if (!paymentId) return NextResponse.json({ error: "No se pudo crear el ingreso." }, { status: 500 });
 
     if (attachment) {
-      const supabase = await createClient();
       const bucket = process.env.NEXT_PUBLIC_SUPABASE_BUCKET_ATTACHMENTS || "pdfs";
 
       const arrayBuffer = await attachment.arrayBuffer();

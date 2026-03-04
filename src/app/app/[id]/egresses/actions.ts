@@ -3,6 +3,7 @@
 import { revalidatePath } from "next/cache";
 import { createClient } from "@/lib/supabase/server";
 import { logAudit } from "@/lib/audit/logAudit";
+import { isEffectivelyZero, toCents, isFullyPaid } from "@/lib/utils/money";
 
 // Sanitizar búsquedas para prevenir SQL injection en PostgREST
 function sanitizeSearch(input: string | undefined | null): string {
@@ -82,9 +83,9 @@ export async function listEgresses(condominiumId: string, filters?: EgressFilter
     const derivedStatus =
       (e.status || "").toLowerCase() === "anulado"
         ? "anulado"
-        : allocated >= total - 0.009
+        : isFullyPaid(allocated, total)
           ? "pagado"
-          : allocated > 0.009
+          : !isEffectivelyZero(allocated)
             ? "parcialmente_pagado"
             : "emitido";
     return {
@@ -274,9 +275,9 @@ export async function cancelEgress(
 
     // Determinar nuevo estado
     let newStatus = "aprobada"; // Por defecto vuelve a aprobada
-    if (newPaidAmount >= Number(op.total_amount || 0) - 0.01) {
+    if (isFullyPaid(newPaidAmount, Number(op.total_amount || 0))) {
       newStatus = "pagado";
-    } else if (newPaidAmount > 0.01) {
+    } else if (!isEffectivelyZero(newPaidAmount)) {
       newStatus = "parcialmente_pagado";
     }
 

@@ -20,32 +20,25 @@ export default function ReconciliationList({
   onCreateNew,
 }: Props) {
   const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
 
   const handleDelete = async (reconciliationId: string) => {
     const recon = reconciliations.find((r) => r.id === reconciliationId);
     const statusText = recon?.status === "conciliada" ? "conciliada" : "en borrador";
-    
-    if (!confirm(`¿Estás seguro de borrar esta conciliación ${statusText}? Esta acción no se puede deshacer y se perderán todos los movimientos seleccionados.`)) {
+
+    if (!confirm(`¿Estás seguro de borrar esta conciliación ${statusText}? Esta acción no se puede deshacer.`)) {
       return;
     }
 
     setDeletingId(reconciliationId);
+    setDeleteError(null);
     const result = await deleteReconciliation(condominiumId, reconciliationId);
     if (result.error) {
-      alert(result.error);
+      setDeleteError(result.error);
     } else {
-      // Recargar la página para actualizar la lista
       window.location.reload();
     }
     setDeletingId(null);
-  };
-
-  const formatDate = (date: string) => {
-    return new Date(date).toLocaleDateString("es-ES", {
-      year: "numeric",
-      month: "long",
-      day: "numeric",
-    });
   };
 
   const formatShortDate = (date: string) => {
@@ -67,6 +60,12 @@ export default function ReconciliationList({
           Nueva Conciliación
         </button>
       </div>
+
+      {deleteError && (
+        <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-md text-sm">
+          {deleteError}
+        </div>
+      )}
 
       {reconciliations.length === 0 ? (
         <div className="bg-gray-50 border border-gray-200 rounded-lg p-8 text-center">
@@ -96,17 +95,12 @@ export default function ReconciliationList({
               <tbody className="divide-y divide-gray-100">
                 {reconciliations.map((recon) => {
                   const account = recon.financial_account;
-                  
-                  // Determinar estado basado en diferencia
-                  // Si hay diferencia significativa, es PENDIENTE (naranja)
-                  // Si no hay diferencia y está conciliada, es CONCILIADO (verde)
-                  // Si está en borrador, es BORRADOR (amarillo)
                   const hasDifference = Math.abs(recon.difference) >= 0.01;
                   const isReconciled = recon.status === "conciliada";
-                  
+
                   let statusText: string;
                   let statusColor: string;
-                  
+
                   if (recon.status === "cerrada") {
                     statusText = "CERRADO";
                     statusColor = "bg-gray-100 text-gray-800";
@@ -117,7 +111,6 @@ export default function ReconciliationList({
                     statusText = "CONCILIADO";
                     statusColor = "bg-green-100 text-green-800";
                   } else {
-                    // Conciliada pero con diferencia = PENDIENTE
                     statusText = "PENDIENTE";
                     statusColor = "bg-orange-100 text-orange-800";
                   }
@@ -156,7 +149,6 @@ export default function ReconciliationList({
                               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
                             </svg>
                           </button>
-                          {/* Botón de imprimir PDF - solo si está conciliada */}
                           {recon.status === "conciliada" && (
                             <button
                               onClick={() => window.open(`/api/reconciliation/${recon.id}/pdf?condominiumId=${condominiumId}`, "_blank")}
@@ -168,7 +160,6 @@ export default function ReconciliationList({
                               </svg>
                             </button>
                           )}
-                          {/* Botón de eliminar siempre visible */}
                           <button
                             onClick={() => handleDelete(recon.id)}
                             disabled={deletingId === recon.id}

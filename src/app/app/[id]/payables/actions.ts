@@ -244,6 +244,15 @@ export async function createPayable(condominiumId: string, payload: PayableGener
     .maybeSingle();
   if (dup) return { error: "Ya existe una OP con ese numero de factura para este proveedor." };
 
+  // =========================================================================
+  // SUPPLIER SNAPSHOT: Capturar datos inmutables del proveedor
+  // =========================================================================
+  const { data: supplier } = await supabase
+    .from("suppliers")
+    .select("name, fiscal_id")
+    .eq("id", parsed.supplier_id)
+    .maybeSingle();
+
   const { data, error } = await supabase
     .from("payable_orders")
     .insert({
@@ -263,6 +272,9 @@ export async function createPayable(condominiumId: string, payload: PayableGener
           ? `Pago previsto: ${parsed.planned_payment_method || "sin definir"}${parsed.notes ? ` | ${parsed.notes}` : ""}`
           : parsed.notes || null,
       invoice_file_url: null,
+      // Snapshot inmutable del proveedor
+      supplier_snapshot_name: supplier?.name || null,
+      supplier_snapshot_fiscal_id: supplier?.fiscal_id || null,
     })
     .select("id")
     .maybeSingle();
@@ -302,6 +314,13 @@ export async function updatePayable(condominiumId: string, payableId: string, pa
     .maybeSingle();
   if (dup) return { error: "Ya existe una OP con ese numero de factura para este proveedor." };
 
+  // Re-capturar snapshot del proveedor (puede haber cambiado el supplier_id)
+  const { data: updatedSupplier } = await supabase
+    .from("suppliers")
+    .select("name, fiscal_id")
+    .eq("id", parsed.supplier_id)
+    .maybeSingle();
+
   const { error } = await supabase
     .from("payable_orders")
     .update({
@@ -317,6 +336,9 @@ export async function updatePayable(condominiumId: string, payableId: string, pa
         parsed.planned_payment_method
           ? `Pago previsto: ${parsed.planned_payment_method || "sin definir"}${parsed.notes ? ` | ${parsed.notes}` : ""}`
           : parsed.notes || null,
+      // Actualizar snapshot (la OP aún no tiene pagos, es seguro)
+      supplier_snapshot_name: updatedSupplier?.name || null,
+      supplier_snapshot_fiscal_id: updatedSupplier?.fiscal_id || null,
     })
     .eq("id", payableId)
     .eq("condominium_id", condominiumId);
@@ -429,8 +451,14 @@ export async function createEgressForPayables(condominiumId: string, payload: Eg
     }
   }
 
-  // ✅ ELIMINADO: reserve_folio_eg
-  // El trigger assign_folio_eg() lo hace automáticamente
+  // =========================================================================
+  // SUPPLIER SNAPSHOT: Capturar datos inmutables del proveedor
+  // =========================================================================
+  const { data: supplierData } = await supabase
+    .from("suppliers")
+    .select("name, fiscal_id, email, phone, address")
+    .eq("id", parsed.supplier_id)
+    .maybeSingle();
 
   const { data: egress, error: egressError } = await supabase
     .from("egresses")
@@ -445,8 +473,13 @@ export async function createEgressForPayables(condominiumId: string, payload: Eg
       reference_number: parsed.reference_number || null,
       notes: parsed.notes || null,
       expense_item_id: payables[0]?.expense_item_id || null,
-      // ✅ NO enviar folio_eg (el trigger lo asigna automáticamente)
       status: "disponible",
+      // Snapshot inmutable del proveedor
+      supplier_snapshot_name: supplierData?.name || null,
+      supplier_snapshot_fiscal_id: supplierData?.fiscal_id || null,
+      supplier_snapshot_email: supplierData?.email || null,
+      supplier_snapshot_phone: supplierData?.phone || null,
+      supplier_snapshot_address: supplierData?.address || null,
     })
     .select("id")
     .maybeSingle();

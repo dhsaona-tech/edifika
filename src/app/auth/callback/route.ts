@@ -8,7 +8,15 @@ export async function GET(request: Request) {
 
   if (code) {
     const supabase = await createClient()
-    await supabase.auth.exchangeCodeForSession(code)
+    const { error } = await supabase.auth.exchangeCodeForSession(code)
+
+    if (!error) {
+      // Si viene de un reset de contraseña, redirigir a la página de nueva contraseña
+      const next = requestUrl.searchParams.get('next')
+      if (next) {
+        return NextResponse.redirect(`${origin}${next}`)
+      }
+    }
   }
 
   return NextResponse.redirect(`${origin}/app`)

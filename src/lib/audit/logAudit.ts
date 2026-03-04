@@ -25,7 +25,11 @@ export type AuditTableName =
   | "extraordinary_plans"
   | "unidentified_payments"
   | "petty_cash_vouchers"
-  | "petty_cash_periods";
+  | "petty_cash_periods"
+  | "utility_bills"
+  | "utility_readings"
+  | "amenities"
+  | "bookings";
 
 interface LogAuditParams {
   condominiumId: string;

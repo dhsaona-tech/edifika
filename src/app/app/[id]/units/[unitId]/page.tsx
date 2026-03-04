@@ -13,9 +13,10 @@ import {
   getUnitChargesSummary,
 } from "../actions";
 import EditUnitModal from "../components/EditUnitModal";
-import { 
-  ArrowLeft, Building2, User, Car, Warehouse, Trash2, Plus, History, 
-  Mail, CheckCircle, XCircle, Store, LogOut, Home, DoorOpen, DollarSign, Circle, Wallet 
+import ShareEstadoCuentaButton from "./components/ShareEstadoCuentaButton";
+import {
+  ArrowLeft, Building2, User, Car, Warehouse, Trash2, Plus, History,
+  Mail, CheckCircle, XCircle, Store, LogOut, Home, DoorOpen, DollarSign, Circle, Wallet
 } from "lucide-react";
 import Link from "next/link";
 import { notFound, redirect } from "next/navigation";
@@ -228,6 +229,7 @@ export default async function UnitDetailPage({ params }: PageProps) {
             >
               <Wallet size={12} /> Cartera
             </Link>
+            <ShareEstadoCuentaButton unitId={unitId} condominiumId={condominiumId} />
           </div>
         </div>
   

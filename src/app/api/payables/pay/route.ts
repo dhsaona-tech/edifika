@@ -4,6 +4,13 @@ import { createEgressForPayables } from "@/app/app/[id]/payables/actions";
 
 export async function POST(request: Request) {
   try {
+    // Verificar autenticación
+    const authSupabase = await createClient();
+    const { data: { user }, error: authError } = await authSupabase.auth.getUser();
+    if (authError || !user) {
+      return NextResponse.json({ error: "No autorizado" }, { status: 401 });
+    }
+
     const contentType = request.headers.get("content-type") || "";
     if (!contentType.includes("multipart/form-data")) {
       return NextResponse.json({ error: "Se requiere multipart/form-data" }, { status: 400 });
