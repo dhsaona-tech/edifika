@@ -13,8 +13,9 @@ import {
   Wallet,
   CheckCircle2,
 } from "lucide-react";
-import { getDashboardMetrics } from "./actions";
+import { getDashboardMetrics, getMorosidadChartData } from "./actions";
 import { formatCurrency } from "@/lib/utils";
+import MorosidadChart from "./components/MorosidadChart";
 
 interface PageProps {
   params: Promise<{ id: string }>;
@@ -22,7 +23,10 @@ interface PageProps {
 
 export default async function DashboardPage({ params }: PageProps) {
   const { id } = await params;
-  const metrics = await getDashboardMetrics(id);
+  const [metrics, morosidadData] = await Promise.all([
+    getDashboardMetrics(id),
+    getMorosidadChartData(id),
+  ]);
 
   const netIncome = metrics.financial.monthlyIncome - metrics.financial.monthlyExpenses;
 
@@ -238,6 +242,17 @@ export default async function DashboardPage({ params }: PageProps) {
               </span>
             </Link>
           </div>
+        </div>
+      </div>
+
+      {/* Morosidad */}
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+        <div className="lg:col-span-2 bg-white rounded-lg border border-gray-200 p-6">
+          <h2 className="text-lg font-semibold text-gray-900 mb-4">Morosidad</h2>
+          <p className="text-xs text-gray-500 mb-4">
+            Distribución de la deuda por antigüedad de vencimiento
+          </p>
+          <MorosidadChart data={morosidadData} />
         </div>
       </div>
 

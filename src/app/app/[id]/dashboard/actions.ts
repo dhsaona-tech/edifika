@@ -27,6 +27,67 @@ export interface DashboardMetrics {
   };
 }
 
+export interface MorosidadCategory {
+  name: string;
+  value: number;
+  color: string;
+}
+
+export async function getMorosidadChartData(
+  condominiumId: string,
+): Promise<MorosidadCategory[]> {
+  const supabase = await createClient();
+
+  const { data: charges } = await supabase
+    .from("charges")
+    .select("balance, due_date")
+    .eq("condominium_id", condominiumId)
+    .eq("status", "pendiente")
+    .gt("balance", 0);
+
+  const now = new Date();
+  const categories: Record<string, number> = {
+    Vigente: 0,
+    "1 a 30 días": 0,
+    "31 a 60 días": 0,
+    "Más de 60 días": 0,
+  };
+
+  if (charges) {
+    for (const charge of charges) {
+      const dueDate = new Date(charge.due_date);
+      const diffMs = now.getTime() - dueDate.getTime();
+      const diffDays = Math.floor(diffMs / (1000 * 60 * 60 * 24));
+      const balance = Number(charge.balance || 0);
+
+      if (diffDays <= 0) {
+        categories["Vigente"] += balance;
+      } else if (diffDays <= 30) {
+        categories["1 a 30 días"] += balance;
+      } else if (diffDays <= 60) {
+        categories["31 a 60 días"] += balance;
+      } else {
+        categories["Más de 60 días"] += balance;
+      }
+    }
+  }
+
+  const colorMap: Record<string, string> = {
+    Vigente: "#10b981",
+    "1 a 30 días": "#f59e0b",
+    "31 a 60 días": "#f97316",
+    "Más de 60 días": "#ef4444",
+  };
+
+  return Object.entries(categories)
+    .filter(([, value]) => value > 0)
+    .map(([name, value]) => ({
+      name,
+      value: Math.round(value * 100) / 100,
+      color: colorMap[name],
+    }));
+}
+
 export async function getDashboardMetrics(condominiumId: string): Promise<DashboardMetrics> {
   const supabase = await createClient();
 
